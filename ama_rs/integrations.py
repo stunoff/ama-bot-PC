@@ -11,6 +11,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import NoResultFound
 
+from ama_rs.accounting_correction import read_correction
 from ama_rs.attendance import scan_attendance
 from ama_rs.bot_actions import workflow_action
 from ama_rs import chat_admin
@@ -66,7 +67,7 @@ def _scope(settings: dict, actor: Actor, now: datetime) -> list[str]:
 
 COMMANDS = {
     "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result",
-    "/step", "/photo", "/checklist", "/cash_menu", "/operator_shift", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help",
+    "/step", "/photo", "/accounting", "/checklist", "/cash_menu", "/operator_shift", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help",
 }
 
 
@@ -133,6 +134,12 @@ def _checklist_screen(connection: Connection, card_id: str, actor: Actor, now: d
 
 def _dispatch(connection: Connection, command: str, arguments: str, command_id: str,
               actor: Actor, now: datetime, file_id: str | None) -> str | Screen:
+    if command == "/accounting":
+        item = read_correction(connection, arguments.strip(), actor, now)
+        return (f"Исправление учёта · {item['status']} · версия {item['revision']}\n"
+                f"Документ: {item['document_id']}\nБыло: {item['current_value']}\n"
+                f"Требуется: {item['expected_value']}\nПричина: {item['reason']}\n"
+                f"Срок: {item['due_at']}\nРезультат: {item.get('result', '—')}")[:3800]
     if command in {"/settings", "/timers"}:
         return chat_admin.settings_screen(connection, actor, now, arguments.strip())
     if command == "/settings_help":

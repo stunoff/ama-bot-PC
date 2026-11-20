@@ -26,6 +26,10 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
     status = f"{card['kind']} · {card['status']} · {card['id']} · v{card['revision']}"
     if payload.get("kind") == "reminder":
         return f"Требуется действие: {status} · {payload['timer']}", None
+    if payload.get("kind") == "accounting":
+        correction = data["accounting"]
+        return (f"Исправление учёта · {correction['status']}\n"
+                f"Исходная карточка {card['id']} · версия {card['revision']}"), None
     if payload.get("kind") == "sales_explanation":
         detail = payload.get("question") or "Требуется объяснение предприятия"
         return f"{status}\nДокумент iiko: {card['source_key']}\n{detail}"[:3800], None

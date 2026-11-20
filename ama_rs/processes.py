@@ -199,6 +199,9 @@ def apply_action(
         next_data = current["data"] | (updates or {})
         clock_keys += tuple(pending_guest_orders({"data": next_data}))
         clock_keys += tuple(pending_first_calls({"data": next_data}))
+    if ("accounting" not in (updates or {})
+            and current["data"].get("accounting", {}).get("status") in {"pending", "working"}):
+        clock_keys = (*(clock_keys or ()), "accounting_due")
     if clock_keys:
         carry_clocks(connection, card_id, current["revision"], revision, clock_keys)
     connection.execute(insert(actions).values(

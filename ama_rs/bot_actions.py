@@ -8,6 +8,7 @@ from sqlalchemy.engine import Connection
 
 from ama_rs import contact_center, operations, personnel, refunds, requests, shifts
 from ama_rs.enterprises import Actor
+from ama_rs.accounting_correction import request_correction, review_correction, submit_correction
 from ama_rs.attendance import acknowledge_deviation, answer_explanation, request_explanation
 from ama_rs.cash_discrepancy import explain_discrepancy, refer_discrepancy
 from ama_rs.operator_shift import add_shift_photo, move_shift, plan_shift, record_shift_check
@@ -22,6 +23,9 @@ ACTIONS = {
     "cash.submit": shifts.submit_cash,
     "cash.ask": shifts.request_cash_clarification,
     "cash.answer": shifts.answer_cash_clarification,
+    "accounting.request": request_correction,
+    "accounting.submit": submit_correction,
+    "accounting.review": review_correction,
     "attendance.question": request_explanation,
     "attendance.answer": answer_explanation,
     "attendance.close": acknowledge_deviation,
@@ -76,7 +80,7 @@ ACTIONS = {
     "refund.control": take_control,
 }
 
-DATE_FIELDS = {"planned_start", "planned_end", "due_at", "next_due", "deadline"}
+DATE_FIELDS = {"due_at", "planned_start", "planned_end", "next_due", "deadline"}
 SERVER_FIELDS = {"connection", "actor", "now", "command_id", "file_id"}
 
 

@@ -45,6 +45,7 @@ ROLE_CHATS = {
     "senior_operator": {"contact_center", "contact_management"},
     "contact_center_lead": {"contact_center", "contact_management"},
     "finance_executor": {"refunds"},
+    "accounting_executor": {"management", "technical"},
 }
 
 CONTROL_ONLY = {

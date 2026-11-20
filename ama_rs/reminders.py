@@ -4,7 +4,7 @@ from hashlib import sha256
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.engine import Connection
 
 from ama_rs.enterprises import chat_is_open, get_enterprise, work_deadlines
@@ -168,6 +168,8 @@ def _target(card, key: str, settings: dict) -> str | None:
     if key in {"cash_review_escalation", "cash_discrepancy_escalation", "cash_question_escalation"}:
         kind = "management" if key == "cash_question_escalation" else "branch"
         return _unique_chat(settings, kind)
+    if key == "accounting_due":
+        return _unique_chat(settings, "branch") or card["data"]["accounting"]["manager"]
     if key == "sales_escalation":
         return _unique_chat(settings, "management")
     if key == "handoff_escalation":
@@ -243,7 +245,8 @@ def _queue_first_call_reminders(connection: Connection, card, keys: list[str], n
 def queue_due_reminders(connection: Connection, now: datetime) -> None:
     due = connection.execute(select(timers.c.card_id, timers.c.key).join(cards).where(
         timers.c.elapsed_at.is_(None), timers.c.due_at <= utc_value(now),
-        timers.c.card_revision == cards.c.revision, cards.c.status.not_in(TERMINAL),
+        timers.c.card_revision == cards.c.revision,
+        or_(cards.c.status.not_in(TERMINAL), timers.c.key == "accounting_due"),
     ).order_by(timers.c.due_at, timers.c.card_id, timers.c.key).limit(100)).all()
     grouped = {}
     for card_id, key in due:
@@ -251,7 +254,9 @@ def queue_due_reminders(connection: Connection, now: datetime) -> None:
     for card_id, keys in grouped.items():
         card = get_card(connection, card_id, lock=True)
         if card["status"] in TERMINAL:
-            continue
+            keys = [key for key in keys if key == "accounting_due"]
+            if not keys:
+                continue
         if card["kind"] == "refund_control" and get_card(connection, card["parent_id"])["status"] in REFUND_DONE:
             continue
         settings = get_enterprise(connection, card["enterprise_id"])["settings"]
@@ -272,6 +277,8 @@ def queue_due_reminders(connection: Connection, now: datetime) -> None:
                 ).limit(1)):
                     open_request_control(connection, card, now)
                     continue
+            if key == "accounting_due" and card["data"].get("accounting", {}).get("status") not in {"pending", "working"}:
+                continue
             if key == "request_control_advance":
                 advance_request_control(connection, card, now)
                 break
