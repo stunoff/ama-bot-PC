@@ -149,7 +149,8 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
         return (f"Исправление учёта · {item['status']} · версия {item['revision']}\n"
                 f"Документ: {item['document_id']}\nБыло: {item['current_value']}\n"
                 f"Требуется: {item['expected_value']}\nПричина: {item['reason']}\n"
-                f"Срок: {item['due_at']}\nРезультат: {item.get('result', '—')}")[:3800]
+                f"Срок: {item['due_at']}\nВопрос: {item.get('question', '—')}\n"
+                f"Ответ: {item.get('answer', '—')}\nРезультат: {item.get('result', '—')}")[:3800]
     if command in {"/settings", "/timers"}:
         return chat_admin.settings_screen(connection, actor, now, arguments.strip())
     if command == "/settings_help":

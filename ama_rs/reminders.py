@@ -277,7 +277,7 @@ def queue_due_reminders(connection: Connection, now: datetime) -> None:
                 ).limit(1)):
                     open_request_control(connection, card, now)
                     continue
-            if key == "accounting_due" and card["data"].get("accounting", {}).get("status") not in {"pending", "working"}:
+            if key == "accounting_due" and card["data"].get("accounting", {}).get("status") not in {"pending", "working", "clarification"}:
                 continue
             if key == "request_control_advance":
                 advance_request_control(connection, card, now)

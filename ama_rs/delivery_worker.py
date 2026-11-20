@@ -7,6 +7,7 @@ from urllib.error import HTTPError
 
 from sqlalchemy import delete, select, update
 
+from ama_rs.accounting_correction import check_reserves, switch_to_reserve
 from ama_rs.attendance import scan_attendance
 from ama_rs.chat_menu import buttons
 from ama_rs.db import create_database_engine
@@ -142,10 +143,16 @@ def deliver_batch(engine, now: datetime) -> None:
                     finish_delivery(connection, delivery_id, record["attempt_id"],
                                     retry_at=now + timedelta(minutes=1))
                 elif definitely_rejected(error):
-                    connection.execute(update(deliveries).where(
+                    correction = record["payload"].get("accounting_request")
+                    if correction:
+                        get_card(connection, record["card_id"], lock=True)
+                    updated = connection.execute(update(deliveries).where(
                         deliveries.c.id == delivery_id, deliveries.c.attempt_id == record["attempt_id"],
                         deliveries.c.state == "uncertain",
                     ).values(state="failed"))
+                    if correction and updated.rowcount:
+                        switch_to_reserve(connection, record["card_id"], datetime.now(UTC),
+                                          failed_payload=record["payload"])
         except (OSError, RuntimeError, ValueError, KeyError):
             # The remote service may have received the message. Reconciliation
             # is necessary before repeating uncertain sends.
@@ -170,6 +177,7 @@ def main() -> None:
                 connection.execute(delete(buttons).where(buttons.c.expires_at <= utc_value(now)))
                 schedule_checklists(connection, now)
                 scan_attendance(connection, now)
+                check_reserves(connection, now)
                 schedule_reports(connection, now)
             next_report_scan = time.monotonic() + 60
         with engine.begin() as connection:

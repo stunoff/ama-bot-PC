@@ -200,7 +200,7 @@ def apply_action(
         clock_keys += tuple(pending_guest_orders({"data": next_data}))
         clock_keys += tuple(pending_first_calls({"data": next_data}))
     if ("accounting" not in (updates or {})
-            and current["data"].get("accounting", {}).get("status") in {"pending", "working"}):
+            and current["data"].get("accounting", {}).get("status") in {"pending", "working", "clarification"}):
         clock_keys = (*(clock_keys or ()), "accounting_due")
     if clock_keys:
         carry_clocks(connection, card_id, current["revision"], revision, clock_keys)
@@ -302,10 +302,17 @@ def claim_delivery(connection: Connection, delivery_id: str, now: datetime):
     stale_question = question is not None and (
         card["status"] != "clarification" or question != card["data"].get("question_round")
     )
+    accounting = card["data"].get("accounting", {})
+    reference = record["payload"].get("accounting_request")
+    stale_accounting = reference is not None and (
+        reference != accounting.get("request_id")
+        or record["payload"].get("accounting_executor") != accounting.get("executor_user")
+        or record["payload"].get("accounting_state") != accounting.get("status")
+    )
     expired_probe = card["kind"] == "route_probe" and (
         card["status"] != "open" or utc_value(datetime.fromisoformat(card["data"]["expires_at"])) <= utc_value(now)
     )
-    if expired_probe or stale_shift_summary or stale_question or (expected is not None and card["revision"] != expected) or (
+    if stale_accounting or expired_probe or stale_shift_summary or stale_question or (expected is not None and card["revision"] != expected) or (
         expected_chat is not None and any(chat.get(field) != value for field, value in expected_chat.items())
     ):
         connection.execute(update(deliveries).where(deliveries.c.id == delivery_id)
