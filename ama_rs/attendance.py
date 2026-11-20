@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
+from ama_rs.checklist_setup import scenario_routes_ok
 from ama_rs.enterprises import Actor, enterprises, get_enterprise, has_role
 from ama_rs.personnel import people, work_time
 from ama_rs.processes import (
@@ -58,7 +59,9 @@ def scan_attendance(connection: Connection, now: datetime, *, enterprise_id: str
     for entry in connection.execute(query).mappings().all():
         settings = entry["settings"]
         management = _chat(settings, "management")
-        if not settings.get("attendance_monitoring") or not management:
+        if not settings.get("attendance_monitoring") or not management or not scenario_routes_ok(
+            connection, entry["id"], settings, "attendance_monitoring", now
+        ):
             continue
         zone = ZoneInfo(settings["timezone"])
         local_day = now.astimezone(zone).date()

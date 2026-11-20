@@ -11,6 +11,10 @@ from ama_rs.route_probe import confirmed_routes
 from ama_rs.shifts import checklist_schedule, route
 
 REQUIRED = {"enterprise": "service_account", "management": "manager", "cash": "cash_reviewer"}
+SCENARIO_ROUTES = {
+    "scheduled_reports": {"management": "manager", "branch": "branch_lead"},
+    "attendance_monitoring": {"management": "manager"},
+}
 
 
 def schedule_issues(settings: dict, now: datetime) -> list[str]:
@@ -33,10 +37,11 @@ def schedule_issues(settings: dict, now: datetime) -> list[str]:
     return ["На ближайшие семь дней нет ни одной смены с доступными окнами подготовки и закрытия."]
 
 
-def route_issues(connection: Connection, enterprise_id: str, settings: dict, now: datetime) -> list[str]:
+def route_issues(connection: Connection, enterprise_id: str, settings: dict, now: datetime,
+                 *, required: dict[str, str] = REQUIRED) -> list[str]:
     verified = confirmed_routes(connection, enterprise_id, settings, now)
     issues = []
-    for kind, role in REQUIRED.items():
+    for kind, role in required.items():
         try:
             key = route(settings, kind)
         except ProcessConflict:
@@ -54,3 +59,10 @@ def route_issues(connection: Connection, enterprise_id: str, settings: dict, now
         if (key, role) not in verified:
             issues.append(f"{key}: требуется ответ в пробной отправке от роли {role}.")
     return issues
+
+
+def scenario_routes_ok(connection: Connection, enterprise_id: str, settings: dict,
+                       field: str, now: datetime) -> bool:
+    return not settings.get(f"verified_{field}") or not route_issues(
+        connection, enterprise_id, settings, now, required=SCENARIO_ROUTES[field]
+    )

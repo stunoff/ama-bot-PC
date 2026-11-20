@@ -117,7 +117,8 @@ def validate_settings(settings: dict) -> None:
                 or len(set(reasons)) != len(reasons)):
             raise ValueError("Provide distinct write-off reasons")
     validate_overrides(settings.get("timing_overrides", {}))
-    for flag in ("scheduled_checklists", "scheduled_reports", "attendance_monitoring", "verified_checklist_activation"):
+    for flag in ("scheduled_checklists", "scheduled_reports", "attendance_monitoring",
+                 "verified_checklist_activation", "verified_scheduled_reports", "verified_attendance_monitoring"):
         if flag in settings and type(settings[flag]) is not bool:
             raise ValueError(f"{flag} must be true or false")
     shifts = settings.get("shift_schedule")

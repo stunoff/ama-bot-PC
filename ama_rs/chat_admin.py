@@ -15,6 +15,7 @@ from ama_rs.route_probe import route_tests
 from ama_rs.readiness import readiness_report
 from ama_rs.processes import ProcessPermissionError
 from ama_rs.shifts import route
+from ama_rs.scenario_activation import SCENARIOS, scenario_issues
 from ama_rs.timing import DEFAULTS, effective
 
 def _entry(connection: Connection, actor: Actor, now: datetime, enterprise_id: str):
@@ -67,6 +68,8 @@ def settings_screen(connection: Connection, actor: Actor, now: datetime, enterpr
         if "admin_access" in fields:
             links.insert(0, ("Мастер чек-листов", {"text": f"/checklist_setup {enterprise_id}"}))
             links.insert(0, ("Готовность к запуску", {"text": f"/readiness {enterprise_id}"}))
+        if fields.intersection(SCENARIOS):
+            links.insert(0, ("Включение сценариев", {"text": f"/scenarios {enterprise_id}"}))
         return screen(connection, actor, now, _summary(entry, fields), links)
     allowed = admin_scope(connection, actor, now)
     if not allowed:
@@ -120,13 +123,44 @@ def checklist_setup_screen(connection: Connection, actor: Actor, now: datetime, 
     return screen(connection, actor, now, "\n".join(lines), links)
 
 
+def scenario_activation_screen(connection: Connection, actor: Actor, now: datetime, enterprise_id: str):
+    entry = _entry(connection, actor, now, enterprise_id)
+    fields = configuration_fields(entry["settings"], actor, now)
+    lines, links = [f"Включение сценариев · {enterprise_id}"], []
+    for field, (label, _) in SCENARIOS.items():
+        if field not in fields:
+            continue
+        issues = scenario_issues(connection, entry["id"], entry["settings"], field, now)
+        state = "включено" if entry["settings"].get(field) else "выключено"
+        lines.append(f"{label} · {state}")
+        if issues:
+            lines.extend(issues)
+        elif not entry["settings"].get(field):
+            links.append((f"Включить: {label}", {"text": f"/configure {enterprise_id} {field} true"}))
+        if entry["settings"].get(field):
+            links.append((f"Выключить: {label}", {"text": f"/configure {enterprise_id} {field} false"}))
+    if len(lines) == 1:
+        raise ProcessPermissionError("No scenario activation permissions")
+    if "admin_access" in fields:
+        links.append(("Проверить маршруты", {"text": f"/route_tests {enterprise_id}"}))
+    links.append(("Настройки", {"text": f"/settings {enterprise_id}"}))
+    return screen(connection, actor, now, "\n".join(lines), links)
+
+
 def _check_activation(connection, entry, candidate, field, now):
-    if field != "scheduled_checklists" or not candidate.get("scheduled_checklists"):
+    if not candidate.get(field):
         return
-    issues = schedule_issues(candidate, now) + route_issues(connection, entry["id"], candidate, now)
+    if field == "scheduled_checklists":
+        issues = schedule_issues(candidate, now) + route_issues(connection, entry["id"], candidate, now)
+        flag = "verified_checklist_activation"
+    elif field in SCENARIOS:
+        issues = scenario_issues(connection, entry["id"], candidate, field, now)
+        flag = f"verified_{field}"
+    else:
+        return
     if issues:
-        raise ProcessPermissionError("The automatic checklist prerequisites are incomplete")
-    candidate["verified_checklist_activation"] = True
+        raise ProcessPermissionError("The automatic scenario prerequisites are incomplete")
+    candidate[flag] = True
 
 
 def route_tests_screen(connection: Connection, actor: Actor, now: datetime, enterprise_id: str, page: int):

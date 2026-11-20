@@ -8,6 +8,7 @@ from sqlalchemy import JSON, Column, DateTime, ForeignKey, MetaData, String, Tab
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.engine import Connection
 
+from ama_rs.checklist_setup import scenario_routes_ok
 from ama_rs.enterprises import Actor, enterprises, has_role
 from ama_rs.processes import ProcessPermissionError, cards, create_card, enqueue, utc_value
 from ama_rs.requests import settings_for
@@ -198,7 +199,9 @@ def schedule_reports(connection: Connection, now: datetime) -> None:
     entries = connection.execute(select(enterprises.c.id, enterprises.c.settings)).mappings().all()
     for entry in entries:
         settings = entry["settings"]
-        if not settings.get("scheduled_reports"):
+        if not settings.get("scheduled_reports") or not scenario_routes_ok(
+            connection, entry["id"], settings, "scheduled_reports", now
+        ):
             continue
         local = now.astimezone(ZoneInfo(settings["timezone"]))
         if local.hour < 10:

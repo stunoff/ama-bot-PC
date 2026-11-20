@@ -69,7 +69,7 @@ def _scope(settings: dict, actor: Actor, now: datetime) -> list[str]:
 
 COMMANDS = {
     "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result",
-    "/step", "/photo", "/accounting", "/checklist", "/cash_menu", "/operator_shift", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help", "/readiness", "/route_tests", "/route_confirm", "/checklist_setup", "/enterprise_new",
+    "/step", "/photo", "/accounting", "/checklist", "/cash_menu", "/operator_shift", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help", "/readiness", "/route_tests", "/route_confirm", "/checklist_setup", "/enterprise_new", "/scenarios",
 }
 
 
@@ -154,6 +154,8 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
         return chat_admin.settings_screen(connection, actor, now, arguments.strip())
     if command == "/settings_help":
         return chat_admin.help_text(connection, actor, now, arguments.strip())
+    if command == "/scenarios":
+        return chat_admin.scenario_activation_screen(connection, actor, now, arguments.strip())
     if command == "/enterprise_new":
         return registration_screen(connection, actor, now, arguments.strip())
     if command == "/checklist_setup":

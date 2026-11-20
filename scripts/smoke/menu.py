@@ -57,21 +57,21 @@ with create_database_engine().begin() as conn:
         1, admin, '/configure menu-test admin_access {"chat":"technical","user":"8","access":null}'
     )
     grant = command(2, admin,
-        '/configure menu-test admin_access {"chat":"technical","user":"9","access":["scheduled_reports"]}')
+        '/configure menu-test admin_access {"chat":"technical","user":"9","access":["format"]}')
     assert "Версия 3" in command(3, admin, dict(grant.buttons)["Сохранить"], callback=True)
     overview = command(4, outsider, "/settings menu-test")
-    assert "scheduled_reports" in overview.text and "Часовой пояс" not in overview.text
+    assert "format" in overview.text and "Часовой пояс" not in overview.text
     assert "admin_access" not in command(5, outsider, "/settings_help menu-test")
     assert "недоступно" in command(6, outsider, '/configure menu-test name "Other"')
     assert "недоступно" in command(7, outsider,
         '/configure menu-test admin_access {"chat":"technical","user":"9","access":"full"}')
-    change = command(8, outsider, '/configure menu-test scheduled_reports true')
+    change = command(8, outsider, '/configure menu-test format "dine_in"')
     assert "Версия 4" in command(9, outsider, dict(change.buttons)["Сохранить"], callback=True)
-    pending = command(10, outsider, '/configure menu-test scheduled_reports false')
+    pending = command(10, outsider, '/configure menu-test format "delivery"')
     revoke = command(11, admin, '/configure menu-test admin_access {"chat":"technical","user":"9","access":null}')
     assert "Версия 5" in command(12, admin, dict(revoke.buttons)["Сохранить"], callback=True)
     assert "недоступно" in command(13, outsider, dict(pending.buttons)["Сохранить"], callback=True)
-    assert get_enterprise(conn, "menu-test")["settings"]["scheduled_reports"] is True
+    assert get_enterprise(conn, "menu-test")["settings"]["format"] == "dine_in"
     conn.rollback()
 
 with patch("ama_rs.messengers._post", return_value={"message": {"body": {"mid": "1"}}}) as post:
