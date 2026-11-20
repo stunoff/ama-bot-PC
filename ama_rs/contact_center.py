@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
 from ama_rs.enterprises import Actor, has_role, work_deadlines
-from ama_rs.guest_contact import guest_timer_keys
+from ama_rs.guest_contact import first_call_keys, guest_timer_keys
 from ama_rs.processes import (
     ProcessConflict, ProcessPermissionError, Transition, apply_action, cards,
     create_card, enqueue, get_card, start_timer,
@@ -68,7 +68,10 @@ def _validate(kind: str, payload: dict) -> dict:
         keys = _order_keys(payload)
         if kind == "redelivery" and len(keys) != 1:
             raise ValueError("Reference the original order for this redelivery")
-        return {"order_results": {key: None for key in keys}}
+        waiting = payload.get("waiting_for_details", [])
+        if not isinstance(waiting, list) or any(not isinstance(key, str) or key not in keys for key in waiting):
+            raise ValueError("Orders awaiting details must be part of the request")
+        return {"order_results": {key: None for key in keys}, "waiting_for_details": waiting}
     return {}
 
 
@@ -127,11 +130,45 @@ def take_operation(connection: Connection, card_id: str, command_id: str, revisi
         raise ProcessConflict("Operational center changed; transfer this card first")
     role = _worker_role(settings, actor, destination, now)
     assignment = {"chat": destination, "role": role, "user": actor.user_id}
+    orders = card["data"].get("order_results", {})
+    ready = {}
+    if card["kind"] == "order_delay" and len(orders) > 1:
+        ready = {order: now.isoformat() for order in orders
+                 if order not in card["data"].get("waiting_for_details", [])}
+    if card["status"] != "open":
+        ready = card["data"].get("first_call_initial", {})
     updated = apply_action(connection, card_id, command_id, revision,
         Transition("take_operation", frozenset({"open"}), "working", frozenset({role}), assignee_only=False),
-        actor, destination, role, now, assignment=assignment)
+        actor, destination, role, now, assignment=assignment, updates={"first_call_ready": ready, "first_call_initial": ready})
+    if card["status"] == "open":
+        for order in ready:
+            _start_first_call(connection, card_id, order, settings, destination, now)
     if card["kind"] == "stop_list":
         enqueue(connection, card_id, f"stop-work:{updated}", destination, {"kind": "stop_work"}, now)
+    return updated
+
+
+def _start_first_call(connection, card_id, order, settings, chat, now):
+    limits = effective(settings, "operation.mass_first_call")
+    for key, deadline in zip(first_call_keys(order), work_deadlines(settings, chat, now, limits)):
+        start_timer(connection, card_id, key, now, deadline - now)
+
+
+def mark_order_ready(connection: Connection, card_id: str, command_id: str, revision: int,
+                     order: str, actor: Actor, now: datetime) -> int:
+    card = get_card(connection, card_id, lock=True)
+    results = card["data"].get("order_results", {})
+    if card["kind"] != "order_delay" or len(results) < 2 or order not in results or results[order] is not None:
+        raise ProcessConflict("Expected an uncalled order in a mass delay")
+    ready = card["data"].get("first_call_ready", {})
+    assigned = card["assignment"]
+    updated = apply_action(connection, card_id, command_id, revision,
+        Transition("order_ready", frozenset({"working"}), None, frozenset({assigned["role"]})),
+        actor, assigned["chat"], assigned["role"], now,
+        updates={"first_call_ready": ready | {order: ready.get(order, now.isoformat())}})
+    if order not in ready:
+        _start_first_call(connection, card_id, order, settings_for(connection, card["enterprise_id"]),
+                          assigned["chat"], now)
     return updated
 
 

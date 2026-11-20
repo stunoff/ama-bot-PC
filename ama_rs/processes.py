@@ -11,7 +11,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.engine import Connection
 
-from ama_rs.guest_contact import pending_guest_orders
+from ama_rs.guest_contact import pending_first_calls, pending_guest_orders
 from ama_rs.enterprises import Actor, chat_is_open, enterprises, has_role
 
 metadata = MetaData()
@@ -198,6 +198,7 @@ def apply_action(
                       "operation_work_control_due")
         next_data = current["data"] | (updates or {})
         clock_keys += tuple(pending_guest_orders({"data": next_data}))
+        clock_keys += tuple(pending_first_calls({"data": next_data}))
     if clock_keys:
         carry_clocks(connection, card_id, current["revision"], revision, clock_keys)
     connection.execute(insert(actions).values(
@@ -281,13 +282,16 @@ def claim_delivery(connection: Connection, delivery_id: str, now: datetime):
         return None
     guests = record["payload"].get("guest_orders")
     if guests is not None:
-        outstanding = set(pending_guest_orders(card).values())
+        pending = pending_first_calls if record["payload"]["kind"] == "first_call" else pending_guest_orders
+        outstanding = set(pending(card).values())
         guests = [order for order in guests if order in outstanding]
         if card["status"] != "working" or not guests:
             connection.execute(update(deliveries).where(deliveries.c.id == delivery_id)
                                .values(state="superseded"))
             return None
-        record = dict(record) | {"payload": record["payload"] | {"guest_orders": guests}}
+        payload = record["payload"] | {"guest_orders": guests}
+        connection.execute(update(deliveries).where(deliveries.c.id == delivery_id).values(payload=payload))
+        record = dict(record) | {"payload": payload}
     expected = record["payload"].get("card_revision")
     expected_chat = record["payload"].get("expected_chat")
     question = record["payload"].get("question_round")

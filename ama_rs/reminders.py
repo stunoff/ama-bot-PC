@@ -8,7 +8,7 @@ from sqlalchemy import select, update
 from sqlalchemy.engine import Connection
 
 from ama_rs.enterprises import chat_is_open, get_enterprise, work_deadlines
-from ama_rs.guest_contact import pending_guest_orders
+from ama_rs.guest_contact import first_call_followup, pending_first_calls, pending_guest_orders
 from ama_rs.processes import cards, deliveries, elapse_timer, enqueue, get_card, start_timer, timers, utc_value
 from ama_rs.refund_control import REFUND_DONE, move_to_final, open_control
 from ama_rs.request_control import advance_request_control, open_request_control
@@ -103,6 +103,13 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
         _delivery_clocks(connection, card, record, settings, delivered_at,
                          ("operation_work_reminder", "operation_work_escalation"),
                          effective(settings, "operation.stop_work"))
+    elif payload.get("first_call_followup") and card["status"] == "working":
+        outstanding = set(pending_first_calls(card).values())
+        limits = effective(settings, "operation.mass_first_call")
+        for deadline in work_deadlines(settings, chat, delivered_at, (limits[2] - limits[1],)):
+            for order in outstanding.intersection(payload["guest_orders"]):
+                start_timer(connection, card["id"], first_call_followup(order), delivered_at,
+                            deadline - delivered_at, delivery_id=record["id"])
     elif followup := payload.get("operation_follow_up"):
         if followup == "take" and card["status"] != "open":
             return
@@ -180,6 +187,46 @@ def _queue_guest_reminders(connection: Connection, card, keys: list[str], now: d
                 {"kind": "guest_contact", "guest_orders": sorted(people)}, now)
 
 
+def _queue_first_call_reminders(connection: Connection, card, keys: list[str], now: datetime) -> None:
+    outstanding = pending_first_calls(card)
+    due = [key for key in keys if key.startswith("first_call_") and elapse_timer(
+        connection, card["id"], key, now
+    )]
+    orders = {outstanding[key] for key in due if key in outstanding}
+    if not orders:
+        return
+    expired = {outstanding[key] for key in due
+               if key.startswith(("first_call_3:", "first_call_4:")) and key in outstanding}
+    followup = False
+    if expired:
+        sent = connection.execute(select(deliveries.c.payload).where(
+            deliveries.c.card_id == card["id"], deliveries.c.signal.startswith("first-call:"),
+            deliveries.c.state == "sent",
+        )).scalars()
+        delivered = {order for payload in sent for order in payload["guest_orders"]}
+        confirmed = expired.intersection(delivered)
+        if confirmed or any(key.startswith("first_call_4:") for key in due):
+            open_request_control(connection, card, now)
+            pending = connection.execute(select(deliveries.c.id, deliveries.c.payload).where(
+                deliveries.c.card_id == card["id"], deliveries.c.signal.startswith("first-call:"),
+                deliveries.c.state == "pending",
+            ).with_for_update()).all()
+            for item in pending:
+                active = sorted(set(item.payload["guest_orders"]) - expired)
+                values = {"payload": item.payload | {"guest_orders": active}} if active else {"state": "superseded"}
+                connection.execute(update(deliveries).where(deliveries.c.id == item.id).values(**values))
+            return
+        followup = True
+        orders = expired
+    batch = sha256("|".join(sorted(due)).encode()).hexdigest()[:24]
+    connection.execute(update(deliveries).where(
+        deliveries.c.card_id == card["id"], deliveries.c.signal.startswith("first-call:"),
+        deliveries.c.state == "pending",
+    ).values(state="superseded"))
+    enqueue(connection, card["id"], f"first-call:{batch}", card["assignment"]["chat"],
+            {"kind": "first_call", "guest_orders": sorted(orders), "first_call_followup": followup}, now)
+
+
 def queue_due_reminders(connection: Connection, now: datetime) -> None:
     due = connection.execute(select(timers.c.card_id, timers.c.key).join(cards).where(
         timers.c.elapsed_at.is_(None), timers.c.due_at <= utc_value(now),
@@ -196,8 +243,9 @@ def queue_due_reminders(connection: Connection, now: datetime) -> None:
             continue
         settings = get_enterprise(connection, card["enterprise_id"])["settings"]
         _queue_guest_reminders(connection, card, keys, now)
+        _queue_first_call_reminders(connection, card, keys, now)
         emitted = set()
-        for key in sorted((key for key in keys if not key.startswith("guest_")), key=lambda item: TIMER_RANK.get(item, 0), reverse=True):
+        for key in sorted((key for key in keys if not key.startswith(("guest_", "first_call_"))), key=lambda item: TIMER_RANK.get(item, 0), reverse=True):
             if not elapse_timer(connection, card_id, key, now):
                 continue
             if key in {"operation_take_control_due", "operation_work_control_due"}:

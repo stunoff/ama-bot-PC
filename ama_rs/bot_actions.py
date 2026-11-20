@@ -47,6 +47,7 @@ ACTIONS = {
     "operation.start": contact_center.start_operation,
     "operation.morning": contact_center.submit_morning_operation,
     "operation.take": contact_center.take_operation,
+    "operation.order_ready": contact_center.mark_order_ready,
     "operation.order_result": contact_center.record_order_result,
     "operation.close": contact_center.close_operation,
     "refund.request": refunds.request_refund,

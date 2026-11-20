@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 
 from ama_rs.cash_discrepancy import explain_discrepancy, refer_discrepancy
-from ama_rs.contact_center import close_operation, record_order_result, start_operation, take_operation
+from ama_rs.contact_center import close_operation, mark_order_ready, record_order_result, start_operation, take_operation
 from ama_rs.db import create_database_engine
 from ama_rs.enterprises import Actor, save_enterprise
 from ama_rs.integrations import run_bot_command
@@ -111,5 +111,31 @@ with create_database_engine().begin() as conn:
     queue_due_reminders(conn, now + timedelta(hours=1))
     assert len(conn.execute(select(deliveries.c.id).where(*guest_filter)).all()) == 2
     assert conn.scalar(select(cards.c.id).where(cards.c.parent_id == mass_id)) is None
+    first = start_operation(conn, settings["id"], "order_delay", "delay-first-call",
+        {"reason": "Preparation", "orders": [{"platform": "site", "number": str(n)} for n in (3, 4, 5)],
+         "waiting_for_details": ["site:5"]}, employee, now)
+    first_id = first["id"]
+    assert take_operation(conn, first_id, "take", 1, operator, now) == 2
+    assert record_order_result(conn, first_id, "warned", 2, "site:3", "warned", operator, now) == 3
+    queue_due_reminders(conn, after_five)
+    filter_calls = (deliveries.c.card_id == first_id, deliveries.c.signal.startswith("first-call:"))
+    call = conn.execute(select(deliveries.c.signal, deliveries.c.payload)
+                        .where(*filter_calls, deliveries.c.state == "pending")).one()
+    assert call.payload["guest_orders"] == ["site:4"]
+    confirm(conn, first_id, call.signal, after_five)
+    assert mark_order_ready(conn, first_id, "ready", 3, "site:5", operator, after_five) == 4
+    assert take_operation(conn, first_id, "take", 1, operator, now) == 2
+    queue_due_reminders(conn, after_ten)
+    call = conn.execute(select(deliveries.c.payload)
+                        .where(*filter_calls, deliveries.c.state == "pending")).scalar_one()
+    assert call["guest_orders"] == ["site:4", "site:5"]
+    queue_due_reminders(conn, now + timedelta(minutes=15))
+    related = select(cards.c.id).where(cards.c.parent_id == first_id, cards.c.kind == "request_control")
+    assert conn.scalars(related).one()
+    after_escalation = conn.execute(select(deliveries.c.payload)
+                        .where(*filter_calls, deliveries.c.state == "pending")).scalar_one()
+    assert after_escalation["guest_orders"] == ["site:5"]
+    queue_due_reminders(conn, now + timedelta(hours=1))
+    assert conn.scalars(related).one()
     conn.rollback()
 print("Cash deadlines, first-delivery escalation and grouped guest-contact reminders verified")
