@@ -23,6 +23,7 @@ from ama_rs.messengers import Message
 from ama_rs.operator_shift import CHECKS, shift_card
 from ama_rs.personnel import claim_invite, people, record_work_time, synchronize_person
 from ama_rs.processes import ProcessConflict, ProcessPermissionError, cards, create_card, enqueue, get_card, utc_value
+from ama_rs.refund_report import refund_report
 from ama_rs.refunds import take_refund
 from ama_rs.route_probe import confirm_probe, start_probe
 from ama_rs.reports import accessible_summaries, format_summary, import_coverage, import_order
@@ -69,7 +70,7 @@ def _scope(settings: dict, actor: Actor, now: datetime) -> list[str]:
 
 COMMANDS = {
     "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result",
-    "/step", "/photo", "/accounting", "/checklist", "/cash_menu", "/operator_shift", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help", "/readiness", "/route_tests", "/route_confirm", "/checklist_setup", "/enterprise_new", "/scenarios",
+    "/step", "/photo", "/accounting", "/checklist", "/cash_menu", "/operator_shift", "/report", "/refund_report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help", "/readiness", "/route_tests", "/route_confirm", "/checklist_setup", "/enterprise_new", "/scenarios",
 }
 
 
@@ -184,6 +185,13 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
         return "Аккаунт ожидает подтверждения руководителем."
     if command in {"/start", "/menu"}:
         return menu(connection, actor, now)
+    if command == "/refund_report":
+        if not arguments:
+            return ("/refund_report YYYY-MM-DD YYYY-MM-DD {фильтры}\n"
+                    "Фильтры: enterprise, brand, reason, requester, executor, status, request.")
+        start, finish, *raw = arguments.split(maxsplit=2)
+        filters = json.loads(raw[0]) if raw else {}
+        return refund_report(connection, actor, now, date.fromisoformat(start), date.fromisoformat(finish), filters)
     if command == "/report":
         start, end = (date.fromisoformat(value) for value in arguments.split())
         reports = accessible_summaries(connection, actor, now, start, end)
