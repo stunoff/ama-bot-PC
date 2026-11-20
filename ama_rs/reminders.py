@@ -1,6 +1,7 @@
 """Convert elapsed workflow deadlines into scoped delivery obligations."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update
 from sqlalchemy.engine import Connection
@@ -18,6 +19,11 @@ TIMER_RANK = {
     "refund_reminder_1": 1, "refund_reminder_2": 2, "refund_reminder_3": 3,
     "financial_deadline": 4, "refund_followup": 5,
     "review_reminder": 1, "review_overdue": 2, "review_escalation": 3,
+    "operation_take_reminder": 1, "operation_take_escalation": 3,
+    "operation_work_reminder": 1, "operation_work_repeat": 2, "operation_work_escalation": 3,
+    "cash_question_first": 1, "cash_question_second": 2, "cash_question_escalation": 3,
+    "cash_review_due": 1, "cash_review_escalation": 3,
+    "cash_discrepancy_due": 1, "cash_discrepancy_escalation": 3,
     "request_control_reminder": 1, "request_control_advance": 2,
     "control_reminder_1": 1, "control_reminder_2": 2, "control_final": 3,
 }
@@ -96,6 +102,69 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
         ):
             start_timer(connection, card["id"], key, delivered_at, deadline - delivered_at,
                         delivery_id=record["id"])
+    elif card["kind"] == "cash_shift" and payload.get("kind") == "cash_review":
+        if card["status"] in {"review", "clarification", "discrepancy"}:
+            _cash_review_clock(connection, card, record["id"], settings, delivered_at)
+    elif card["kind"] == "cash_shift" and payload.get("kind") == "cash_question":
+        if card["status"] != "clarification" or payload["question_round"] != card["data"].get("question_round"):
+            return
+        _delivery_clocks(connection, card, record, settings, delivered_at,
+                         ("cash_question_first", "cash_question_second", "cash_question_escalation"),
+                         effective(settings, "cash.question"))
+    elif card["kind"] == "cash_discrepancy" and payload.get("kind") == "cash_discrepancy":
+        _delivery_clocks(connection, card, record, settings, delivered_at,
+                         ("cash_discrepancy_due", "cash_discrepancy_escalation"),
+                         effective(settings, "cash.discrepancy"))
+    elif payload.get("kind") == "operation":
+        if card["status"] == "open":
+            _delivery_clocks(connection, card, record, settings, delivered_at,
+                             ("operation_take_reminder", "operation_take_escalation"),
+                             effective(settings, "operation.take"))
+        if card["kind"] in {"go_list", "delivery", "suspension"}:
+            _delivery_clocks(connection, card, record, settings, delivered_at,
+                             ("operation_work_reminder", "operation_work_repeat", "operation_work_escalation"),
+                             effective(settings, "operation.work"))
+    elif payload.get("kind") == "stop_work" and card["status"] == "working":
+        _delivery_clocks(connection, card, record, settings, delivered_at,
+                         ("operation_work_reminder", "operation_work_escalation"),
+                         effective(settings, "operation.stop_work"))
+    elif followup := payload.get("operation_follow_up"):
+        if followup == "take" and card["status"] != "open":
+            return
+        delay = 5 if followup == "take" else 10
+        _delivery_clocks(connection, card, record, settings, delivered_at,
+                         (f"operation_{followup}_control_due",), (delay,))
+
+
+def _delivery_clocks(connection, card, record, settings, delivered_at, keys, limits):
+    for key, deadline in zip(keys, _work_deadlines(settings, record["chat_key"], delivered_at, limits)):
+        start_timer(connection, card["id"], key, delivered_at, deadline - delivered_at,
+                    delivery_id=record["id"])
+
+
+def _cash_review_clock(connection, card, delivery_id, settings, now):
+    key = card["data"]["cash_chat"]
+    chat = settings["chats"].get(key)
+    received = card["data"].get("closed_in_iiko_at")
+    if not chat or not chat.get("cash_accept_by") or not received:
+        return
+    zone = ZoneInfo(chat.get("timezone", settings["timezone"]))
+    first_day = datetime.fromisoformat(received).astimezone(zone).date()
+    clock = time.fromisoformat(chat["cash_accept_by"])
+    for offset in range(1, 15):
+        candidate = datetime.combine(first_day + timedelta(days=offset), clock, zone).astimezone(UTC)
+        if chat_is_open(settings, key, candidate - timedelta(microseconds=1)):
+            due = max(candidate, now + timedelta(seconds=1))
+            start_timer(connection, card["id"], "cash_review_due", now, due - now, delivery_id=delivery_id)
+            for deadline in _work_deadlines(settings, key, due, effective(settings, "cash.review_overdue")):
+                start_timer(connection, card["id"], "cash_review_escalation", now, deadline - now,
+                            delivery_id=delivery_id)
+            return
+
+
+def _unique_chat(settings: dict, kind: str) -> str | None:
+    matches = [key for key, chat in settings["chats"].items() if chat["kind"] == kind]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _target(card, key: str, settings: dict) -> str | None:
@@ -103,6 +172,11 @@ def _target(card, key: str, settings: dict) -> str | None:
         return None
     if card["kind"] == "refund":
         return card["data"]["worker"]["chat"]
+    if key in {"cash_review_escalation", "cash_discrepancy_escalation", "cash_question_escalation"}:
+        kind = "management" if key == "cash_question_escalation" else "branch"
+        return _unique_chat(settings, kind)
+    if key == "cash_review_due":
+        return card["data"]["cash_chat"]
     return card["assignment"]["chat"]
 
 
@@ -125,6 +199,17 @@ def queue_due_reminders(connection: Connection, now: datetime) -> None:
         for key in sorted(keys, key=lambda item: TIMER_RANK.get(item, 0), reverse=True):
             if not elapse_timer(connection, card_id, key, now):
                 continue
+            if key in {"operation_take_control_due", "operation_work_control_due"}:
+                open_request_control(connection, card, now)
+                continue
+            if key in {"operation_take_escalation", "operation_work_escalation"}:
+                stage = "take" if key == "operation_take_escalation" else "work"
+                if connection.scalar(select(deliveries.c.id).where(
+                    deliveries.c.card_id == card_id, deliveries.c.state == "sent",
+                    deliveries.c.signal.like(f"timer:%:operation_{stage}_reminder"),
+                ).limit(1)):
+                    open_request_control(connection, card, now)
+                    continue
             if key == "request_control_advance":
                 advance_request_control(connection, card, now)
                 break
@@ -145,6 +230,8 @@ def queue_due_reminders(connection: Connection, now: datetime) -> None:
                     start_timer(connection, card_id, "request_control_advance", due, followup - due)
             target = _target(card, key, settings)
             payload = {"kind": "reminder", "timer": key, "card_revision": card["revision"]}
+            if key in {"operation_take_escalation", "operation_work_escalation"}:
+                payload["operation_follow_up"] = "take" if key == "operation_take_escalation" else "work"
             if key == "financial_deadline":
                 finance = card["data"]["worker"]["chat"]
                 prior = connection.scalar(select(deliveries.c.id).where(

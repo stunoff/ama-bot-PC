@@ -10,6 +10,7 @@ from ama_rs.processes import (
     ProcessConflict, ProcessPermissionError, Transition, apply_action, cards,
     create_card, enqueue, get_card,
 )
+from ama_rs.request_control import finish_request_control
 from ama_rs.requests import settings_for
 from ama_rs.shifts import route
 
@@ -91,7 +92,7 @@ def start_operation(connection: Connection, enterprise_id: str, kind: str, sourc
         {"request": payload, "destination": destination, "mode": settings["contact_mode"], **extras},
         now, parent_id=parent_id,
     )
-    enqueue(connection, card["id"], "operation", destination, {"kind": "card"}, now)
+    enqueue(connection, card["id"], "operation", destination, {"kind": "operation"}, now)
     return card
 
 
@@ -124,9 +125,12 @@ def take_operation(connection: Connection, card_id: str, command_id: str, revisi
         raise ProcessConflict("Operational center changed; transfer this card first")
     role = _worker_role(settings, actor, destination, now)
     assignment = {"chat": destination, "role": role, "user": actor.user_id}
-    return apply_action(connection, card_id, command_id, revision,
+    updated = apply_action(connection, card_id, command_id, revision,
         Transition("take_operation", frozenset({"open"}), "working", frozenset({role}), assignee_only=False),
         actor, destination, role, now, assignment=assignment)
+    if card["kind"] == "stop_list":
+        enqueue(connection, card_id, f"stop-work:{updated}", destination, {"kind": "stop_work"}, now)
+    return updated
 
 
 def record_order_result(connection: Connection, card_id: str, command_id: str, revision: int,
@@ -150,6 +154,8 @@ def close_operation(connection: Connection, card_id: str, command_id: str, revis
     if any(item not in {"warned", "resolved"} for item in card["data"].get("order_results", {}).values()):
         raise ProcessConflict("Some orders still need a decision")
     assigned = card["assignment"]
-    return apply_action(connection, card_id, command_id, revision,
+    updated = apply_action(connection, card_id, command_id, revision,
         Transition("close_operation", frozenset({"working"}), "closed", frozenset({assigned["role"]})),
         actor, assigned["chat"], assigned["role"], now, updates={"result": result})
+    finish_request_control(connection, card_id, now)
+    return updated

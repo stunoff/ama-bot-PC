@@ -8,6 +8,7 @@ from sqlalchemy.engine import Connection
 
 from ama_rs import contact_center, operations, personnel, refunds, requests, shifts
 from ama_rs.enterprises import Actor
+from ama_rs.cash_discrepancy import explain_discrepancy, refer_discrepancy
 from ama_rs.processes import ProcessConflict
 from ama_rs.refund_control import take_control
 from ama_rs.request_control import accept_request_control
@@ -18,6 +19,8 @@ ACTIONS = {
     "cash.ask": shifts.request_cash_clarification,
     "cash.answer": shifts.answer_cash_clarification,
     "cash.accept": shifts.accept_cash,
+    "cash.discrepancy": refer_discrepancy,
+    "cash.explain": explain_discrepancy,
     "checklist.problem": shifts.checklist_problem,
     "problem.resolve": requests.resolve_problem,
     "problem.finish": requests.finish_linked_problem,

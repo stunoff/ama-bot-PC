@@ -187,25 +187,35 @@ def apply_action(
                       "financial_deadline", "refund_followup")
     elif current["kind"] == "task" and current["status"] in {"open", "working"} and status == "working":
         clock_keys = ("execution", "execution_warning", "execution_escalation")
+    elif current["kind"] == "cash_shift" and status != "accepted":
+        clock_keys = ("cash_review_due", "cash_review_escalation")
+    elif current["data"].get("mode") in {"central", "independent"} and status == "working":
+        clock_keys = ("operation_work_reminder", "operation_work_repeat", "operation_work_escalation",
+                      "operation_work_control_due")
     if clock_keys:
-        connection.execute(update(timers).where(
-            timers.c.card_id == card_id, timers.c.card_revision == current["revision"],
-            timers.c.key.in_(clock_keys),
-        ).values(card_revision=revision))
-        pending = connection.execute(select(deliveries.c.id, deliveries.c.payload).where(
-            deliveries.c.card_id == card_id, deliveries.c.state == "pending",
-            deliveries.c.signal.startswith("timer:"),
-        ).with_for_update()).all()
-        for record in pending:
-            if record.payload.get("timer") in clock_keys:
-                connection.execute(update(deliveries).where(deliveries.c.id == record.id).values(
-                    payload=record.payload | {"card_revision": revision}))
+        carry_clocks(connection, card_id, current["revision"], revision, clock_keys)
     connection.execute(insert(actions).values(
         card_id=card_id, command_id=command_id, revision=revision, actor=identity,
         action=transition.name, input=payload, previous_status=current["status"],
         status=status, recorded_at=utc_value(now),
     ))
     return revision
+
+
+def carry_clocks(connection: Connection, card_id: str, previous: int,
+                 revision: int, keys: tuple[str, ...]) -> None:
+    connection.execute(update(timers).where(
+        timers.c.card_id == card_id, timers.c.card_revision == previous,
+        timers.c.key.in_(keys),
+    ).values(card_revision=revision))
+    pending = connection.execute(select(deliveries.c.id, deliveries.c.payload).where(
+        deliveries.c.card_id == card_id, deliveries.c.state == "pending",
+        deliveries.c.signal.startswith("timer:"),
+    ).with_for_update()).all()
+    for record in pending:
+        if record.payload.get("timer") in keys:
+            connection.execute(update(deliveries).where(deliveries.c.id == record.id).values(
+                payload=record.payload | {"card_revision": revision}))
 
 
 def attach(
@@ -265,7 +275,11 @@ def claim_delivery(connection: Connection, delivery_id: str, now: datetime):
         return None
     expected = record["payload"].get("card_revision")
     expected_chat = record["payload"].get("expected_chat")
-    if (expected is not None and card["revision"] != expected) or (
+    question = record["payload"].get("question_round")
+    stale_question = question is not None and (
+        card["status"] != "clarification" or question != card["data"].get("question_round")
+    )
+    if stale_question or (expected is not None and card["revision"] != expected) or (
         expected_chat is not None and any(chat.get(field) != value for field, value in expected_chat.items())
     ):
         connection.execute(update(deliveries).where(deliveries.c.id == delivery_id)

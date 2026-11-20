@@ -133,6 +133,10 @@ def validate_settings(settings: dict) -> None:
             raise ValueError(f"Unsupported chat platform for {key}")
         if chat.get("kind") not in set().union(*ROLE_CHATS.values()):
             raise ValueError(f"Unsupported chat kind for {key}")
+        if "cash_accept_by" in chat:
+            if chat["kind"] != "cash":
+                raise ValueError("cash_accept_by belongs to a cash route")
+            _wall_time(chat["cash_accept_by"])
         if "general_topic_id" in chat:
             topic = chat["general_topic_id"]
             if chat["platform"] != "telegram" or chat["kind"] != "technical" or (

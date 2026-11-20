@@ -11,7 +11,7 @@ from sqlalchemy.engine import Connection
 from ama_rs.enterprises import Actor, chat_is_open, get_enterprise, has_role, save_enterprise
 from ama_rs.processes import (
     ProcessConflict, ProcessPermissionError, Transition, actions, apply_action, attach,
-    attachments, cards, create_card, deliveries, enqueue, get_card, utc_value,
+    attachments, cards, carry_clocks, create_card, deliveries, enqueue, get_card, utc_value,
 )
 
 
@@ -372,7 +372,10 @@ def confirm_iiko_closure(connection: Connection, enterprise_id: str, shift_id: s
         recorded_at=utc_value(now),
     ))
     if status == "review":
-        enqueue(connection, cash["id"], "review", chat, {"kind": "review"}, now)
+        enqueue(connection, cash["id"], "review", chat, {"kind": "cash_review"}, now)
+    else:
+        carry_clocks(connection, cash["id"], cash["revision"], revision,
+                     ("cash_question_first", "cash_question_second", "cash_question_escalation"))
     return True
 
 
@@ -396,10 +399,10 @@ def request_cash_clarification(connection: Connection, cash_id: str, command_id:
     new_revision = apply_action(connection, cash_id, command_id, revision,
         Transition("request_cash_clarification", frozenset({"awaiting_iiko", "review"}),
                    "clarification", frozenset({"cash_reviewer"}), assignee_only=False),
-        actor, cash["data"]["cash_chat"], "cash_reviewer", now, updates={"question": question},
+        actor, cash["data"]["cash_chat"], "cash_reviewer", now, updates={"question": question, "question_round": command_id},
         assignment={"chat": enterprise_chat, "role": "service_account"})
     enqueue(connection, cash_id, f"clarification:{new_revision}", enterprise_chat,
-            {"kind": "clarification", "question": question}, now)
+            {"kind": "cash_question", "question": question, "question_round": command_id}, now)
     return new_revision
 
 
@@ -417,5 +420,6 @@ def answer_cash_clarification(connection: Connection, cash_id: str, command_id: 
         actor, route(settings, "enterprise"), "service_account", now, updates={"answer": answer},
         assignment={"chat": reviewer_chat, "role": "cash_reviewer"})
     enqueue(connection, cash_id, f"clarification-answer:{new_revision}", reviewer_chat,
-            {"kind": "clarification_answer", "answer": answer}, now)
+            {"kind": "cash_review" if "closed_in_iiko_at" in cash["data"] else "clarification_answer",
+             "answer": answer}, now)
     return new_revision

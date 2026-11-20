@@ -27,9 +27,14 @@ def open_request_control(connection: Connection, request, now: datetime) -> None
             ("technical", _route(settings, "technical_management", "technical_director")),
             ("executive", executive), ("general", general),
         ]
+    elif request["data"].get("mode") == "central":
+        stages = [
+            ("branch", _route(settings, "contact_management", "contact_center_lead")),
+            ("executive", executive), ("general", general),
+        ]
     else:
         stages = []
-        if request["data"]["reviewer"]["role"] == "manager":
+        if request["data"].get("reviewer", {}).get("role") == "manager" or request["data"].get("mode") == "independent":
             stages.append(("branch", _route(settings, "branch", "branch_lead")))
         if settings["final_route"] == "partner":
             stages.append(("partner", _route(settings, "partner", "franchise_partner")))
