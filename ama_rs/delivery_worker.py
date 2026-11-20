@@ -13,6 +13,7 @@ from ama_rs.messengers import definitely_rejected, send_message
 from ama_rs.processes import attachments, claim_delivery, deliveries, finish_delivery, get_card, utc_value
 from ama_rs.reminders import after_delivery, queue_due_reminders
 from ama_rs.reports import format_summary, schedule_reports, summary
+from ama_rs.shift_scheduler import schedule_checklists
 
 
 def _message(connection, record: dict) -> tuple[str, str | None]:
@@ -94,6 +95,7 @@ def main() -> None:
         if time.monotonic() >= next_report_scan:
             with engine.begin() as connection:
                 connection.execute(delete(buttons).where(buttons.c.expires_at <= utc_value(now)))
+                schedule_checklists(connection, now)
                 schedule_reports(connection, now)
             next_report_scan = time.monotonic() + 60
         with engine.begin() as connection:

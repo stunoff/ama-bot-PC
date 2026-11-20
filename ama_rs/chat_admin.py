@@ -9,10 +9,11 @@ from sqlalchemy.engine import Connection
 from ama_rs.chat_menu import admin_scope, screen
 from ama_rs.enterprises import Actor, save_enterprise, validate_settings
 from ama_rs.processes import ProcessPermissionError
+from ama_rs.shifts import route
 from ama_rs.timing import DEFAULTS, effective
 
 EDITABLE = {"name", "timezone", "format", "shift_schedule", "facilities", "contact_mode",
-            "final_route", "scheduled_reports", "timing_overrides"}
+            "final_route", "scheduled_reports", "scheduled_checklists", "timing_overrides", "chat_calendar"}
 
 
 def _entry(connection: Connection, actor: Actor, now: datetime, enterprise_id: str):
@@ -61,7 +62,10 @@ def preview(connection: Connection, actor: Actor, now: datetime, arguments: str)
         raise ValueError("Field is unavailable from chat")
     value = json.loads(raw)
     _change(entry["settings"], field, value)
-    before = json.dumps(entry["settings"].get(field), ensure_ascii=False)
+    previous = entry["settings"].get(field)
+    if field == "chat_calendar":
+        previous = entry["settings"]["chats"][value["chat"]].get("calendar")
+    before = json.dumps(previous, ensure_ascii=False)
     after = json.dumps(value, ensure_ascii=False)
     if max(len(before), len(after)) > 500:
         raise ValueError("Preview is too long")
@@ -74,16 +78,37 @@ def preview(connection: Connection, actor: Actor, now: datetime, arguments: str)
 
 
 def _change(settings: dict, field: str, value) -> dict:
-    expected = {"scheduled_reports": bool, "facilities": list, "shift_schedule": dict,
-                "timing_overrides": dict}.get(field, str)
+    expected = {"scheduled_reports": bool, "scheduled_checklists": bool,
+                "facilities": list, "shift_schedule": dict, "timing_overrides": dict,
+                "chat_calendar": dict}.get(field, str)
     if type(value) is not expected:
         raise ValueError("Invalid setting value")
     if field == "facilities" and (any(type(item) is not str for item in value)
             or set(value) - {"guest_entrance", "guest_hall", "reception", "guest_restroom", "staff_restroom"}):
         raise ValueError("Unknown facility")
+    if field == "shift_schedule" and set(value) != {
+        "service_starts_at", "service_ends_at", "preparation_minutes", "closing_minutes"
+    }:
+        raise ValueError("Unexpected shift schedule fields")
     result = deepcopy(settings)
-    result[field] = value
+    if field == "chat_calendar":
+        if set(value) != {"chat", "calendar"} or value["chat"] not in result["chats"]:
+            raise ValueError("Specify the existing chat and its calendar")
+        calendar = value["calendar"]
+        if isinstance(calendar, list) and any(
+            not isinstance(window, dict) or set(window) != {"weekday", "start", "end"}
+            for window in calendar
+        ):
+            raise ValueError("Unexpected calendar fields")
+        result["chats"][value["chat"]]["calendar"] = calendar
+    else:
+        result[field] = value
     validate_settings(result)
+    if result.get("scheduled_checklists"):
+        for kind in ("enterprise", "management"):
+            key = route(result, kind)
+            if not result["chats"][key].get("calendar"):
+                raise ValueError(f"Calendar is required for {kind}")
     return result
 
 

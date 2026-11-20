@@ -217,14 +217,21 @@ def ingest_iiko(connection: Connection, payload: dict, now: datetime) -> bool:
     elif kind == "source.coverage":
         import_coverage(connection, enterprise_id, data)
     elif kind == "shift.checklist_due":
-        begin_checklist(connection, enterprise_id, data["phase"], data["shift_id"], now)
+        if not enterprise["settings"].get("scheduled_checklists"):
+            begin_checklist(connection, enterprise_id, data["phase"], data["shift_id"], now)
     elif kind == "cash_shift.closed":
+        shift_id = data["shift_id"]
+        scope = (cards.c.enterprise_id == enterprise_id, cards.c.kind == "cash_shift")
         cash = connection.execute(select(cards.c.status).where(
-            cards.c.enterprise_id == enterprise_id, cards.c.kind == "cash_shift",
-            cards.c.source_key == data["shift_id"]
+            *scope, cards.c.source_key == shift_id
         ).with_for_update()).scalar_one_or_none()
+        if cash is None and data.get("business_day") is not None:
+            shift_id = f"local:{date.fromisoformat(data['business_day']).isoformat()}"
+            cash = connection.execute(select(cards.c.status).where(
+                *scope, cards.c.source_key == shift_id
+            ).with_for_update()).scalar_one_or_none()
         if cash not in {"review", "accepted"} and not confirm_iiko_closure(
-            connection, enterprise_id, data["shift_id"], key, now
+            connection, enterprise_id, shift_id, key, now
         ):
             raise ProcessConflict("The cash package is not ready for this closure")
     elif kind in {"sales.writeoff", "sales.return"}:

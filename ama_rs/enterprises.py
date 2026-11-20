@@ -108,13 +108,21 @@ def validate_settings(settings: dict) -> None:
         raise ValueError("At least one distinct brand is required")
 
     validate_overrides(settings.get("timing_overrides", {}))
+    for flag in ("scheduled_checklists", "scheduled_reports"):
+        if flag in settings and type(settings[flag]) is not bool:
+            raise ValueError(f"{flag} must be true or false")
     shifts = settings.get("shift_schedule")
+    if settings.get("scheduled_checklists") and not shifts:
+        raise ValueError("Automatic checklists require shift_schedule")
     if shifts is not None:
         _wall_time(shifts["service_starts_at"])
         _wall_time(shifts["service_ends_at"])
         for key in ("preparation_minutes", "closing_minutes"):
             if type(shifts[key]) is not int or not 0 <= shifts[key] < 1440:
                 raise ValueError(f"{key} must be an integer from 0 to 1439")
+
+    if settings.get("scheduled_checklists") and shifts["closing_minutes"] == 0:
+        raise ValueError("Automatic checklists require a positive closing window")
 
     for key, chat in settings["chats"].items():
         _required_text({"key": key}, "key", 100)
