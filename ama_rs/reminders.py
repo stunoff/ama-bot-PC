@@ -23,6 +23,7 @@ TIMER_RANK = {
     "review_reminder": 1, "review_overdue": 2, "review_escalation": 3,
     "operation_take_reminder": 1, "operation_take_escalation": 3,
     "operation_work_reminder": 1, "operation_work_repeat": 2, "operation_work_escalation": 3,
+    "sales_first": 1, "sales_second": 2, "sales_escalation": 3,
     "cash_question_first": 1, "cash_question_second": 2, "cash_question_escalation": 3,
     "cash_review_due": 1, "cash_review_escalation": 3,
     "cash_discrepancy_due": 1, "cash_discrepancy_escalation": 3,
@@ -89,6 +90,10 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
         _delivery_clocks(connection, card, record, settings, delivered_at,
                          ("cash_discrepancy_due", "cash_discrepancy_escalation"),
                          effective(settings, "cash.discrepancy"))
+    elif payload.get("kind") == "sales_explanation":
+        if card["status"] in {"open", "clarification"} and payload.get("card_revision") == card["revision"]:
+            _delivery_clocks(connection, card, record, settings, delivered_at,
+                             ("sales_first", "sales_second", "sales_escalation"), effective(settings, "sales.reply"))
     elif card["kind"] == "operator_handoff" and payload.get("kind") == "handoff_offer":
         if card["status"] == "open":
             _delivery_clocks(connection, card, record, settings, delivered_at,
@@ -163,6 +168,8 @@ def _target(card, key: str, settings: dict) -> str | None:
     if key in {"cash_review_escalation", "cash_discrepancy_escalation", "cash_question_escalation"}:
         kind = "management" if key == "cash_question_escalation" else "branch"
         return _unique_chat(settings, kind)
+    if key == "sales_escalation":
+        return _unique_chat(settings, "management")
     if key == "handoff_escalation":
         return _unique_chat(settings, "contact_management")
     if key == "cash_review_due":

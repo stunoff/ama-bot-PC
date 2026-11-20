@@ -109,6 +109,12 @@ def validate_settings(settings: dict) -> None:
     ) or len(set(brands)) != len(brands):
         raise ValueError("At least one distinct brand is required")
 
+    if "writeoff_reasons" in settings:
+        reasons = settings["writeoff_reasons"]
+        if (not isinstance(reasons, list) or not 1 <= len(reasons) <= 30
+                or any(not isinstance(reason, str) or not reason.strip() or len(reason) > 100 for reason in reasons)
+                or len(set(reasons)) != len(reasons)):
+            raise ValueError("Provide distinct write-off reasons")
     validate_overrides(settings.get("timing_overrides", {}))
     for flag in ("scheduled_checklists", "scheduled_reports"):
         if flag in settings and type(settings[flag]) is not bool:

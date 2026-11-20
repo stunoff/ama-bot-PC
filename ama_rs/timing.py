@@ -8,6 +8,7 @@ DEFAULTS = {
     "refund.execution": (30, 60, 720, 1440),
     "refund.control.branch": (10, 20, 40),
     "refund.control.final": (10, 20),
+    "sales.reply": (10, 25, 40),
     "cash.question": (10, 25, 40),
     "cash.discrepancy": (30, 45),
     "cash.review_overdue": (120,),

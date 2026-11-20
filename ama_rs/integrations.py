@@ -251,6 +251,10 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
                         if row["status"] == "filling" and row["kind"] in {"morning_checklist", "evening_checklist"}:
                             links.append((f"Открыть чек-лист · {row['id'][:8]}",
                                           {"text": f"/checklist {row['id']}"}))
+                        if row["status"] == "review" and row["kind"] in {"sales.writeoff", "sales.return"}:
+                            fields = json.dumps({"card_id": row["id"], "revision": row["revision"]})
+                            links.append((f"Принять объяснение · {row['id'][:8]}",
+                                          {"text": "/workflow sales.accept " + fields}))
                         if row["kind"] == "operator_shift":
                             links.append(("Смена оператора", {"text": f"/operator_shift {row['id']}"}))
                         if row["status"] == "open" and row["kind"] == "operator_handoff":
@@ -357,7 +361,8 @@ def ingest_iiko(connection: Connection, payload: dict, now: datetime) -> bool:
         management = route(settings, "management")
         card = create_card(connection, enterprise_id, kind, str(data["document_id"]),
                            {"chat": enterprise_chat, "role": "service_account"}, data, now)
-        enqueue(connection, card["id"], "explain", enterprise_chat, {"kind": "card"}, now)
+        enqueue(connection, card["id"], "explain", enterprise_chat,
+                {"kind": "sales_explanation", "card_revision": 1}, now)
         enqueue(connection, card["id"], "info", management, {"kind": "card"}, now)
     else:
         raise ValueError("Unsupported iiko event type")

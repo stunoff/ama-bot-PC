@@ -104,11 +104,27 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
     by_kind = Counter()
     by_status = Counter()
     redelivery_causes = Counter()
+    sales = {}
     for row in records:
         if row["kind"] == "report":
             continue
         by_kind[row["kind"]] += 1
         by_status[row["status"]] += 1
+        if row["kind"] in {"sales.writeoff", "sales.return"}:
+            metric = sales.setdefault(row["kind"], {"reasons": Counter(), "return_types": Counter(),
+                                                   "missing_photo": 0, "unreviewed": 0,
+                                                   "known_amount_kopecks": 0, "with_amount": 0})
+            answer = row["data"].get("sale_explanation", {})
+            if reason := answer.get("reason"):
+                metric["reasons"][reason] += 1
+            if return_type := answer.get("return_type"):
+                metric["return_types"][return_type] += 1
+            metric["missing_photo"] += bool(answer.get("missing_photo"))
+            metric["unreviewed"] += row["status"] != "closed"
+            amount = row["data"].get("amount_kopecks")
+            if type(amount) is int:
+                metric["known_amount_kopecks"] += amount
+                metric["with_amount"] += 1
         if row["kind"] == "redelivery":
             redelivery_causes[row["data"]["request"]["reason"]] += 1
 
@@ -118,10 +134,9 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
     ))}
     quality = {source: _quality(states, source, day_start, day_end)
                for source in ("orders", "writeoffs", "returns", "attendance", "cash", "schedule")}
-    if quality["writeoffs"] == "unavailable":
-        by_kind.pop("sales.writeoff", None)
-    if quality["returns"] == "unavailable":
-        by_kind.pop("sales.return", None)
+    for source, kind in (("writeoffs", "sales.writeoff"), ("returns", "sales.return")):
+        if quality[source] == "unavailable" and kind in by_kind:
+            quality[source] = "partial"
 
     traffic = {kind: {"measured": 0, "over_target": 0, "unmeasured": 0, "total_seconds": 0}
                for kind in TARGETS}
@@ -155,7 +170,7 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
         "from": day_start.isoformat(), "until": day_end.isoformat(), "counts": dict(by_kind),
         "current_statuses": dict(by_status), "sources": quality, "redelivery_causes": dict(redelivery_causes),
         "orders": traffic if quality["orders"] != "unavailable" or has_order_data else None,
-        "unclassified_orders": unclassified,
+        "unclassified_orders": unclassified, "sales": sales,
     }
 
 
@@ -225,4 +240,12 @@ def format_summary(data: dict) -> str:
     kinds = {"problem": "Проблемы", "task": "Поручения", "audit": "Аудиты",
              "cash_shift": "Кассовые смены", "redelivery": "Довозы", "refund": "Онлайн-возвраты"}
     lines.extend(f"{label}: {data['counts'][key]}" for key, label in kinds.items() if key in data["counts"])
+    for kind, label, source in (("sales.writeoff", "Списания", "writeoffs"), ("sales.return", "Возвраты iiko", "returns")):
+        stats = data.get("sales", {}).get(kind)
+        if not stats:
+            continue
+        lines.append(f"{label}: {data['counts'][kind]}, без фото {stats['missing_photo']}, "
+                     f"не разобрано {stats['unreviewed']} · {labels[data['sources'][source]]}")
+        if stats["reasons"]:
+            lines.append(", ".join(f"{reason} — {count}" for reason, count in stats["reasons"].items()))
     return "\n".join(lines)

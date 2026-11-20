@@ -25,6 +25,14 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
     status = f"{card['kind']} · {card['status']} · {card['id']} · v{card['revision']}"
     if payload.get("kind") == "reminder":
         return f"Требуется действие: {status} · {payload['timer']}", None
+    if payload.get("kind") == "sales_explanation":
+        detail = payload.get("question") or "Требуется объяснение предприятия"
+        return f"{status}\nДокумент iiko: {card['source_key']}\n{detail}"[:3800], None
+    if payload.get("kind") == "sales_review":
+        explanation = data["sale_explanation"]
+        photo = "\nФото не предоставлено" if explanation["missing_photo"] else ""
+        return (f"{status}\nДокумент iiko: {card['source_key']}\nПричина: {explanation['reason']}\n"
+                f"{explanation['comment']}{photo}")[:3800], None
     if payload.get("kind") == "operator_shift_summary":
         open_work = outstanding(connection, card)
         return (f"Сводка к завершению смены · {card['assignment']['user']}\n"

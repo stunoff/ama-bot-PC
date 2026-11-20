@@ -129,7 +129,7 @@ def _change_access(settings: dict, rule: dict, now: datetime) -> None:
 
 def _change(settings: dict, field: str, value, now: datetime) -> dict:
     expected = {"scheduled_reports": bool, "scheduled_checklists": bool,
-                "facilities": list, "shift_schedule": dict, "timing_overrides": dict,
+                "facilities": list, "writeoff_reasons": list, "shift_schedule": dict, "timing_overrides": dict,
                 "chat_calendar": dict, "admin_access": dict}.get(field, str)
     if type(value) is not expected:
         raise ValueError("Invalid setting value")
