@@ -11,6 +11,7 @@ from ama_rs.processes import (
     ProcessConflict, ProcessPermissionError, Transition, apply_action, cards,
     create_card, enqueue, get_card, start_timer,
 )
+from ama_rs.refund_handoff import cancel_refund_handoff
 from ama_rs.refund_guest import publish_result
 from ama_rs.refund_control import control_routes, finish_control
 from ama_rs.requests import _validate_recipient, settings_for
@@ -152,6 +153,7 @@ def record_refund_result(connection: Connection, card_id: str, command_id: str, 
         Transition("record_refund_result", frozenset(allowed), outcome, frozenset({"finance_executor"})),
         actor, worker["chat"], "finance_executor", now, updates=changes)
     if outcome != "uncertain":
+        cancel_refund_handoff(connection, card_id, now)
         finish_control(connection, card_id, now)
         publish_result(connection, card, outcome, now)
     return new_revision

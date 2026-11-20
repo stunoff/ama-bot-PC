@@ -15,6 +15,7 @@ from ama_rs.operator_shift import add_shift_photo, move_shift, plan_shift, recor
 from ama_rs.operator_handoff import offer_handoff, respond_handoff
 from ama_rs.processes import ProcessConflict
 from ama_rs.sales_review import accept_sale_explanation, ask_sale_question, assign_sale_task, attach_sale_photo, submit_sale_explanation
+from ama_rs.refund_handoff import offer_refund_handoff, respond_refund_handoff
 from ama_rs.refund_guest import record_contact
 from ama_rs.refund_control import take_control
 from ama_rs.request_control import accept_request_control
@@ -79,6 +80,8 @@ ACTIONS = {
     "refund.reserve": refunds.reserve_refund,
     "refund.result": refunds.record_refund_result,
     "refund.ask": refunds.ask_refund_question,
+    "refund.handoff": offer_refund_handoff,
+    "refund.handoff_response": respond_refund_handoff,
     "refund.guest_contact": record_contact,
     "refund.answer": refunds.answer_refund_question,
     "refund.control": take_control,

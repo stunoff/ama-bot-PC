@@ -102,6 +102,11 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
             progress += f"\n{steps[current]['key']} — {steps[current]['title']}"
         problems = sum(item["outcome"] == "problem" for item in data["results"].values())
         return f"{status}\n{progress}\nПроблемы: {problems}", None
+    if payload.get("kind") in {"refund_handoff", "refund_handoff_declined"}:
+        declined = payload["kind"] == "refund_handoff_declined"
+        label = "Передача возврата отклонена" if declined else "Возврат предложен к передаче"
+        user = data["previous"]["user"] if declined else card["assignment"]["user"]
+        return f"{label} · {card['parent_id']}\nУчастник: {user}\n{status}"[:3800], None
     if payload.get("kind") == "refund_guest":
         outcome = "Возврат не требуется"
         if data["outcome"] == "executed":
