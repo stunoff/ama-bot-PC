@@ -3,7 +3,7 @@
 import hashlib
 import hmac
 import json
-from datetime import datetime
+from datetime import date, datetime
 from uuid import uuid4
 
 from sqlalchemy import Column, DateTime, MetaData, String, Table, select
@@ -16,6 +16,7 @@ from ama_rs.messengers import Message
 from ama_rs.personnel import people, record_work_time, synchronize_person
 from ama_rs.processes import ProcessConflict, ProcessPermissionError, cards, create_card, enqueue, utc_value
 from ama_rs.refunds import take_refund
+from ama_rs.reports import accessible_summaries, format_summary, import_coverage, import_order
 from ama_rs.requests import report_problem, submit_result, take_request
 from ama_rs.shifts import (
     accept_cash, accept_checklist, add_checklist_photo, begin_checklist, complete_step,
@@ -62,7 +63,7 @@ def run_bot_command(connection: Connection, message: Message, now: datetime) -> 
     command, _, arguments = message.text.strip().partition(" ")
     command = command.split("@", 1)[0].lower()
     if command not in {
-        "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result", "/step", "/photo"
+        "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result", "/step", "/photo", "/report"
     }:
         return None
     if not claim_event(connection, message.actor.platform, message.event_id, now):
@@ -86,7 +87,12 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
                 "/result <ID> <версия> <результат> — передать результат\n"
                 "/step <ID> <версия> <пункт> <итог> — завершить пункт\n"
                 "/photo <ID> <пункт> <слот> — подпись к фото\n"
-                "/accept <ID> <версия> — принять чек-лист или кассу")
+                "/accept <ID> <версия> — принять чек-лист или кассу\n"
+                "/report <дата начала> <дата конца> — сводка до даты конца")
+    if command == "/report":
+        start, end = (date.fromisoformat(value) for value in arguments.split())
+        reports = accessible_summaries(connection, actor, now, start, end)
+        return "\n\n".join(map(format_summary, reports))[:3800]
     if command == "/tasks":
         lines = []
         for entry in connection.execute(select(enterprises)).mappings():
@@ -171,6 +177,10 @@ def ingest_iiko(connection: Connection, payload: dict, now: datetime) -> bool:
                          data["source_key"], datetime.fromisoformat(data["starts_at"]),
                          datetime.fromisoformat(data["ends_at"]) if data.get("ends_at") else None,
                          datetime.fromisoformat(data["observed_at"]))
+    elif kind == "orders.updated":
+        import_order(connection, enterprise_id, data)
+    elif kind == "source.coverage":
+        import_coverage(connection, enterprise_id, data)
     elif kind == "shift.checklist_due":
         begin_checklist(connection, enterprise_id, data["phase"], data["shift_id"], now)
     elif kind == "cash_shift.closed":

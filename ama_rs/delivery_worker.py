@@ -2,7 +2,7 @@
 
 import os
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from urllib.error import HTTPError
 
 from sqlalchemy import select, update
@@ -10,6 +10,7 @@ from sqlalchemy import select, update
 from ama_rs.db import create_database_engine
 from ama_rs.messengers import definitely_rejected, send_message
 from ama_rs.processes import attachments, claim_delivery, deliveries, finish_delivery, get_card, utc_value
+from ama_rs.reports import format_summary, schedule_reports, summary
 
 
 def _message(connection, record: dict) -> tuple[str, str | None]:
@@ -17,6 +18,11 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
     data = card["data"]
     payload = record["payload"]
     status = f"{card['kind']} · {card['status']} · {card['id']} · v{card['revision']}"
+    if payload.get("kind") == "report":
+        period = data["report"]
+        latest = summary(connection, card["enterprise_id"], date.fromisoformat(period["from"]),
+                         date.fromisoformat(period["until"]))
+        return format_summary(latest)[:3800], None
     if payload.get("kind") == "attachment":
         file = connection.execute(select(attachments).where(
             attachments.c.card_id == card["id"], attachments.c.command_id == payload["command_id"]
@@ -76,8 +82,14 @@ def deliver_batch(engine, now: datetime) -> None:
 
 def main() -> None:
     engine = create_database_engine()
+    next_report_scan = 0.0
     while True:
-        deliver_batch(engine, datetime.now(UTC))
+        now = datetime.now(UTC)
+        if time.monotonic() >= next_report_scan:
+            with engine.begin() as connection:
+                schedule_reports(connection, now)
+            next_report_scan = time.monotonic() + 60
+        deliver_batch(engine, now)
         time.sleep(5)
 
 
