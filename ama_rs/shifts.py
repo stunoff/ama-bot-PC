@@ -131,6 +131,7 @@ def begin_checklist(connection: Connection, enterprise_id: str, phase: str, shif
         now, status="filling",
     )
     enqueue(connection, card["id"], "management-card", management, {"kind": "card"}, now)
+    enqueue(connection, card["id"], "start-checklist", card["assignment"]["chat"], {"kind": "card"}, now)
     return card
 
 

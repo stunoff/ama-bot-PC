@@ -101,3 +101,36 @@ docker compose exec -T app python -m ama_rs.setup_enterprise show branch-1
 укажите `service_starts_at`, `service_ends_at` в формате HH:MM,
 `preparation_minutes` и `closing_minutes`. До подключения обработчиков
 мессенджера и iiko сценарии доступны на уровне сервисных функций.
+
+## Вебхуки и доставка
+
+Профиль `integrations` включает обработчик очереди:
+`docker compose --profile integrations up --build -d --wait`.
+Для сборки через прокси добавьте `worker` с тем же секретом `pip_ca` в локальный
+Compose-файл. Разрешите исходящий HTTPS к `api.telegram.org` и
+`platform-api.max.ru` для выбранных платформ.
+
+Перед использованием разместите приложение за HTTPS-прокси с ограничением
+размера и времени обработки запросов. Привяжите `/webhooks/telegram` и
+`/webhooks/max` к своим ботам. Укажите токены и секреты вебхуков в локальном
+`.env`. Команда `/menu` показывает доступные команды. `/tasks` показывает
+текущий пункт и слоты фото для назначенного чек-листа.
+
+`POST /webhooks/iiko` обслуживает адаптер нормализованных событий. Адаптер
+подписывает точные байты JSON в `X-AMA-Signature` как hex HMAC-SHA256 с
+`IIKO_WEBHOOK_SECRET`. Оболочка события содержит `id`, `enterprise_id`
+(внешний iiko ID), `type` и объект `data`. Поддерживаются:
+
+| Тип | Поля data |
+| --- | --- |
+| staff.updated | employee_id, name, profile |
+| staff.schedule / staff.attendance | employee_id, source_key, starts_at, ends_at, observed_at |
+| shift.checklist_due | phase (morning или evening), shift_id |
+| cash_shift.closed | shift_id |
+| sales.writeoff / sales.return | document_id и доступные данные операции |
+
+Дата и время событий указываются в ISO 8601 со смещением. Если событие пришло
+до обязательного сопоставления или закрываемый кассовый комплект ещё не
+передан, HTTP 409 разрешает адаптеру повторить то же событие после устранения
+причины. Сопоставление реальных контрактов iiko и регистрация вебхуков требуют
+настроек конкретного предприятия и тестовых событий поставщиков.

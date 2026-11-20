@@ -1,10 +1,14 @@
 x-python: &python
   build: .
-  environment:
+  environment: &database
     MYSQL_HOST: db
     MYSQL_DATABASE: ${MYSQL_DATABASE:-ama_rs}
     MYSQL_USER: ${MYSQL_USER:-ama_rs}
     MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+
+x-messenger: &messenger
+  TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+  MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
 
 services:
   db:
@@ -32,6 +36,11 @@ services:
 
   app:
     <<: *python
+    environment:
+      <<: [*messenger, *database]
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      MAX_WEBHOOK_SECRET: ${MAX_WEBHOOK_SECRET:-}
+      IIKO_WEBHOOK_SECRET: ${IIKO_WEBHOOK_SECRET:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -40,6 +49,17 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  worker:
+    <<: *python
+    profiles: ["integrations"]
+    command: ["python", "-m", "ama_rs.delivery_worker"]
+    environment:
+      <<: [*messenger, *database]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
 volumes:
   mysql-data:
