@@ -9,11 +9,12 @@ from sqlalchemy import delete, select, update
 
 from ama_rs.chat_menu import buttons
 from ama_rs.db import create_database_engine
-from ama_rs.messengers import definitely_rejected, send_message
+from ama_rs.messengers import definitely_rejected, edit_message, send_message
 from ama_rs.processes import attachments, claim_delivery, deliveries, finish_delivery, get_card, utc_value
 from ama_rs.reminders import after_delivery, queue_due_reminders
 from ama_rs.reports import format_summary, schedule_reports, summary
 from ama_rs.shift_scheduler import schedule_checklists
+from ama_rs.shifts import refresh_management_card
 
 
 def _message(connection, record: dict) -> tuple[str, str | None]:
@@ -34,6 +35,13 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
         )).mappings().one()
         photo = file["file_id"] if file["platform"] == record["chat"]["platform"] == "telegram" else None
         return f"{status}\nМатериал: {file['item']}", photo
+    if card["kind"] in {"morning_checklist", "evening_checklist"}:
+        current, steps = data["current"], data["steps"]
+        progress = f"Выполнено: {current}/{len(steps)}"
+        if current < len(steps):
+            progress += f"\n{steps[current]['key']} — {steps[current]['title']}"
+        problems = sum(item["outcome"] == "problem" for item in data["results"].values())
+        return f"{status}\n{progress}\nПроблемы: {problems}", None
     if payload.get("kind") in {"financial_status", "financial_result"}:
         return f"{status}\nСумма: {data.get('requested_kopecks', 0) / 100:.2f} ₽", None
     detail = data.get("title") or data.get("description") or payload.get("question") or payload.get("answer")
@@ -62,10 +70,14 @@ def deliver_batch(engine, now: datetime) -> None:
                 finish_delivery(connection, delivery_id, record["attempt_id"],
                                 retry_at=now + timedelta(minutes=5))
                 continue
+            rendered_revision = get_card(connection, record["card_id"])["revision"]
             text, photo = _message(connection, record)
         try:
-            external_id = send_message(platform, token, record["chat"], text,
-                                       quiet=record["payload"].get("kind") == "attachment", photo=photo)
+            if message_id := record["payload"].get("edit"):
+                external_id = edit_message(platform, token, record["chat"], message_id, text)
+            else:
+                external_id = send_message(platform, token, record["chat"], text,
+                                           quiet=record["payload"].get("kind") == "attachment", photo=photo)
         except HTTPError as error:
             with engine.begin() as connection:
                 if error.code == 429:
@@ -82,9 +94,12 @@ def deliver_batch(engine, now: datetime) -> None:
             continue
         else:
             with engine.begin() as connection:
-                get_card(connection, record["card_id"], lock=True)
+                card = get_card(connection, record["card_id"], lock=True)
                 if finish_delivery(connection, delivery_id, record["attempt_id"], external_id=external_id):
-                    after_delivery(connection, record, datetime.now(UTC))
+                    delivered_at = datetime.now(UTC)
+                    after_delivery(connection, record, delivered_at)
+                    if record["signal"] == "management-card" and card["revision"] != rendered_revision:
+                        refresh_management_card(connection, card, card["revision"], delivered_at)
 
 
 def main() -> None:

@@ -197,12 +197,16 @@ def apply_action(
 def attach(
     connection: Connection, card_id: str, command_id: str, item: str, file_id: str,
     actor: Actor, chat_key: str, role: str, now: datetime, metadata: dict,
+    *, assignee_only: bool = True,
 ) -> None:
     current = get_card(connection, card_id, lock=True)
     assigned_to = current["assignment"]
-    if (assigned_to["chat"], assigned_to["role"]) != (chat_key, role) or (
-        assigned_to.get("user") not in (None, actor.user_id)
-    ) or not has_role(_settings(connection, current["enterprise_id"]), actor, chat_key, role, now):
+    assigned = (assigned_to["chat"], assigned_to["role"]) == (chat_key, role) and (
+        assigned_to.get("user") in (None, actor.user_id)
+    )
+    if (assignee_only and not assigned) or not has_role(
+        _settings(connection, current["enterprise_id"]), actor, chat_key, role, now
+    ):
         raise ProcessPermissionError("Cannot attach to this card")
     existing = connection.execute(select(attachments).where(
         attachments.c.card_id == card_id, attachments.c.command_id == command_id
@@ -246,7 +250,10 @@ def claim_delivery(connection: Connection, delivery_id: str, now: datetime):
     if chat is None or not chat_is_open(settings, record["chat_key"], now):
         return None
     expected = record["payload"].get("card_revision")
-    if expected is not None and card["revision"] != expected:
+    expected_chat = record["payload"].get("expected_chat")
+    if (expected is not None and card["revision"] != expected) or (
+        expected_chat is not None and any(chat.get(field) != value for field, value in expected_chat.items())
+    ):
         connection.execute(update(deliveries).where(deliveries.c.id == delivery_id)
             .values(state="superseded"))
         return None

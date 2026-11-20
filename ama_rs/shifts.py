@@ -11,7 +11,7 @@ from sqlalchemy.engine import Connection
 from ama_rs.enterprises import Actor, chat_is_open, get_enterprise, has_role, save_enterprise
 from ama_rs.processes import (
     ProcessConflict, ProcessPermissionError, Transition, actions, apply_action, attach,
-    attachments, cards, create_card, enqueue, get_card, utc_value,
+    attachments, cards, create_card, deliveries, enqueue, get_card, utc_value,
 )
 
 
@@ -130,7 +130,9 @@ def begin_checklist(connection: Connection, enterprise_id: str, phase: str, shif
          "current": 0, "results": {}, "management": management},
         now, status="filling",
     )
-    enqueue(connection, card["id"], "management-card", management, {"kind": "card"}, now)
+    identity = _chat_identity(settings["chats"][management])
+    enqueue(connection, card["id"], "management-card", management,
+            {"kind": "card", "expected_chat": identity}, now)
     enqueue(connection, card["id"], "start-checklist", card["assignment"]["chat"], {"kind": "card"}, now)
     return card
 
@@ -164,11 +166,21 @@ def add_checklist_photo(connection: Connection, card_id: str, command_id: str, s
     if slot not in step["photos"] and slot != "problem":
         raise ValueError("Unknown photo slot")
     settings = _settings(connection, card["enterprise_id"])
-    target = _cash_card(connection, card, settings, now) if step_key == "morning_cash" and slot == "receipt" else card
-    destination = target["data"]["cash_chat"] if target["kind"] == "cash_shift" else card["data"]["management"]
+    target = card
+    destination = card["data"]["management"]
+    if step_key == "morning_cash" and slot == "receipt":
+        target = _cash_card(connection, card, settings, now)
+        destination = target["data"]["cash_chat"]
+    elif slot == "problem":
+        target = connection.execute(select(cards).where(
+            cards.c.enterprise_id == card["enterprise_id"], cards.c.parent_id == card_id,
+            cards.c.kind == "problem", cards.c.source_key == f"{card_id}:{step_key}",
+        ).with_for_update()).mappings().one_or_none()
+        if target is None:
+            raise ProcessConflict("Record the problem description before adding photos")
     item = "morning:receipt" if target["kind"] == "cash_shift" else f"{step_key}:{slot}"
     attach(connection, target["id"], command_id, item, file_id, actor, route(settings, "enterprise"),
-           "service_account", now, {})
+           "service_account", now, {}, assignee_only=target["kind"] != "problem")
     enqueue(connection, target["id"], f"photo:{command_id}", destination,
             {"kind": "attachment", "command_id": command_id}, now)
 
@@ -222,9 +234,10 @@ def complete_step(
         settings["hidden_shift_items"] = settings.get("hidden_shift_items", {}) | {key: until.isoformat()}
         save_enterprise(connection, settings, entry["revision"], f"{actor.platform}:{actor.user_id}")
     elif outcome == "problem":
-        checklist_problem(connection, card_id, key, result["details"].get("description", ""), actor, now)
+        problem = checklist_problem(connection, card_id, key, result["details"].get("description", ""), actor, now)
         if key not in {"storage", "stations", "sanitation", "attendance", "team_ready"}:
-            _require_documents(connection, card_id, {f"{key}:problem"})
+            _require_documents(connection, problem["id"], {f"{key}:problem"})
+        result["problem_card"] = problem["id"]
     elif key == "opening":
         if outcome not in {"opened", "delayed"}:
             raise ValueError("Expected opening or delay confirmation")
@@ -257,6 +270,7 @@ def complete_step(
         updates={"current": next_step, "results": data["results"] | {key: result}},
         assignment={"chat": management, "role": "manager"} if finished else None,
     )
+    refresh_management_card(connection, card, new_revision, now)
     if finished:
         enqueue(connection, card_id, "review", management, {"kind": "review"}, now)
     return new_revision
@@ -276,9 +290,31 @@ def accept_checklist(connection: Connection, card_id: str, command_id: str, revi
     card = get_card(connection, card_id, lock=True)
     if card["kind"] not in ("morning_checklist", "evening_checklist"):
         raise ProcessConflict("Expected a checklist")
-    return apply_action(connection, card_id, command_id, revision,
+    accepted = apply_action(connection, card_id, command_id, revision,
         Transition("accept", frozenset({"review"}), "accepted", frozenset({"manager"})),
         actor, card["data"]["management"], "manager", now)
+    refresh_management_card(connection, card, accepted, now)
+    return accepted
+
+
+def _chat_identity(chat: dict) -> dict:
+    return {key: chat.get(key) for key in ("platform", "id", "topic_id")}
+
+
+def refresh_management_card(connection: Connection, card, revision: int, now: datetime) -> None:
+    target = card["data"]["management"]
+    original = connection.execute(select(deliveries).where(
+        deliveries.c.card_id == card["id"], deliveries.c.chat_key == target,
+        deliveries.c.signal == "management-card",
+    ).with_for_update()).mappings().one_or_none()
+    if original is None:
+        return
+    chat = original["payload"].get("expected_chat")
+    if not chat or not original["external_id"]:
+        return
+    enqueue(connection, card["id"], f"management-edit:{revision}", target,
+            {"kind": "card", "expected_chat": chat, "edit": original["external_id"],
+             "card_revision": revision}, now)
 
 
 def add_cash_document(connection: Connection, checklist_id: str, command_id: str, document: str,

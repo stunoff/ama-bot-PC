@@ -2,11 +2,11 @@ from datetime import UTC, date, datetime
 from sqlalchemy import select
 from ama_rs.db import create_database_engine
 from ama_rs.enterprises import Actor, save_enterprise
-from ama_rs.processes import ProcessConflict, attachments, cards, get_card
+from ama_rs.processes import ProcessConflict, attachments, cards, claim_delivery, deliveries, finish_delivery, get_card
 from ama_rs.shifts import (
     accept_cash, accept_checklist, add_cash_document, add_checklist_photo,
     answer_cash_clarification, begin_checklist, checklist_schedule, complete_step,
-    confirm_iiko_closure, request_cash_clarification, submit_cash,
+    checklist_problem, confirm_iiko_closure, request_cash_clarification, submit_cash,
 )
 
 now = datetime(2026, 11, 23, 9, tzinfo=UTC)
@@ -30,8 +30,23 @@ with create_database_engine().begin() as conn:
     save_enterprise(conn, settings, 0, "test")
     morning = begin_checklist(conn, settings["id"], "morning", "shift-id", now)
     assert morning["id"] == begin_checklist(conn, settings["id"], "morning", "shift-id", now)["id"]
+    base_id = conn.scalar(select(deliveries.c.id).where(
+        deliveries.c.card_id == morning["id"], deliveries.c.signal == "management-card"))
+    base = claim_delivery(conn, base_id, now)
+    assert finish_delivery(conn, base_id, base["attempt_id"], external_id="99")
     for idx, step in enumerate(morning["data"]["steps"], 1):
         key = step["key"]
+        if key == "internet":
+            problem = checklist_problem(conn, morning["id"], key, "Slow", employee, now)
+            add_checklist_photo(conn, morning["id"], "problem-photo", key, "problem", "file", employee, now)
+            assert conn.scalar(select(attachments.c.card_id).where(
+                attachments.c.command_id == "problem-photo")) == problem["id"]
+            assert complete_step(conn, morning["id"], f"m:{idx}", idx, key, "problem", employee, now,
+                                 details={"description": "Slow"}) == idx + 1
+            edit = conn.scalar(select(deliveries.c.payload).where(
+                deliveries.c.card_id == morning["id"], deliveries.c.signal == "management-edit:2"))
+            assert edit["edit"] == "99"
+            continue
         for slot in step["photos"]:
             add_checklist_photo(conn, morning["id"], f"m-photo:{idx}:{slot}", key, slot, "file", employee, now)
         arguments = (conn, morning["id"], f"m:{idx}", idx, key, "opened" if key == "opening" else "ok", employee, now)

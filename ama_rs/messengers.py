@@ -14,8 +14,8 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def _post(url: str, body: dict, headers: dict | None = None) -> dict:
-    request = Request(url, data=json.dumps(body, ensure_ascii=False).encode(), method="POST",
+def _post(url: str, body: dict, headers: dict | None = None, *, method: str = "POST") -> dict:
+    request = Request(url, data=json.dumps(body, ensure_ascii=False).encode(), method=method,
                       headers={"Content-Type": "application/json"} | (headers or {}))
     with build_opener(NoRedirect()).open(request, timeout=10) as response:
         result = json.load(response)
@@ -111,3 +111,16 @@ def acknowledge_callback(platform: str, token: str, callback_id: str) -> None:
     elif platform == "max":
         query = urlencode({"callback_id": callback_id})
         _post(f"https://platform-api.max.ru/answers?{query}", {}, {"Authorization": token})
+
+
+def edit_message(platform: str, token: str, chat: dict, external_id: str, text: str) -> str:
+    if platform == "telegram":
+        _post(f"https://api.telegram.org/bot{token}/editMessageText",
+              {"chat_id": chat["id"], "message_id": int(external_id), "text": text})
+    elif platform == "max":
+        query = urlencode({"message_id": external_id})
+        _post(f"https://platform-api.max.ru/messages?{query}", {"text": text},
+              {"Authorization": token}, method="PUT")
+    else:
+        raise ValueError("Unsupported messenger")
+    return external_id
