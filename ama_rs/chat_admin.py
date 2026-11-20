@@ -9,6 +9,7 @@ from sqlalchemy.engine import Connection
 from ama_rs.admin_permissions import ADMIN_ROLES
 from ama_rs.chat_menu import admin_scope, configuration_fields, screen
 from ama_rs.enterprises import Actor, has_role, save_enterprise, validate_settings
+from ama_rs.enterprise_wizard import creator_context
 from ama_rs.checklist_setup import REQUIRED, route_issues, schedule_issues
 from ama_rs.route_probe import route_tests
 from ama_rs.readiness import readiness_report
@@ -70,11 +71,14 @@ def settings_screen(connection: Connection, actor: Actor, now: datetime, enterpr
     allowed = admin_scope(connection, actor, now)
     if not allowed:
         raise ProcessPermissionError("Administration requires the assigned General context")
-    return screen(connection, actor, now, "Администрирование · выберите предприятие", [
+    links = [
         ((entry["settings"]["name"] if "name" in configuration_fields(
             entry["settings"], actor, now
         ) else entry["id"])[:60], {"text": f"/settings {entry['id']}"}) for entry in allowed[:20]
-    ])
+    ]
+    if creator_context(connection, actor, now) is not None:
+        links.insert(0, ("Новое предприятие", {"text": "/enterprise_new"}))
+    return screen(connection, actor, now, "Администрирование · выберите предприятие", links)
 
 
 def readiness_screen(connection: Connection, actor: Actor, now: datetime, enterprise_id: str):

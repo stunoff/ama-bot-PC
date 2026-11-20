@@ -168,6 +168,10 @@ def validate_settings(settings: dict) -> None:
             _validate_windows(windows, weekly=False)
 
     for grant in settings["grants"]:
+        if "create_enterprises" in grant and (
+            grant["role"] != "system_admin" or type(grant["create_enterprises"]) is not bool
+        ):
+            raise ValueError("Enterprise creation can only be delegated to a system administrator")
         if grant.get("role") == "delegated_admin":
             fields = grant.get("fields")
             if (not isinstance(fields, list) or not fields

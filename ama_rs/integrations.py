@@ -17,6 +17,7 @@ from ama_rs.bot_actions import workflow_action
 from ama_rs import chat_admin
 from ama_rs.chat_menu import Screen, consume, menu, screen
 from ama_rs.contact_center import OPERATIONS, take_operation
+from ama_rs.enterprise_wizard import create_enterprise, registration_screen
 from ama_rs.enterprises import Actor, enterprises, get_enterprise, has_role
 from ama_rs.messengers import Message
 from ama_rs.operator_shift import CHECKS, shift_card
@@ -68,7 +69,7 @@ def _scope(settings: dict, actor: Actor, now: datetime) -> list[str]:
 
 COMMANDS = {
     "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result",
-    "/step", "/photo", "/accounting", "/checklist", "/cash_menu", "/operator_shift", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help", "/readiness", "/route_tests", "/route_confirm", "/checklist_setup",
+    "/step", "/photo", "/accounting", "/checklist", "/cash_menu", "/operator_shift", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help", "/readiness", "/route_tests", "/route_confirm", "/checklist_setup", "/enterprise_new",
 }
 
 
@@ -88,6 +89,9 @@ def run_bot_command(connection: Connection, message: Message, now: datetime) -> 
             if "admin_save" in callback:
                 with connection.begin_nested():
                     return chat_admin.save(connection, actor, now, callback["admin_save"])
+            if "enterprise_new" in callback:
+                with connection.begin_nested():
+                    return create_enterprise(connection, actor, now, callback["enterprise_new"])
             if "route_probe" in callback:
                 with connection.begin_nested():
                     card_id = start_probe(connection, command_id=command_id, actor=actor, now=now,
@@ -150,6 +154,8 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
         return chat_admin.settings_screen(connection, actor, now, arguments.strip())
     if command == "/settings_help":
         return chat_admin.help_text(connection, actor, now, arguments.strip())
+    if command == "/enterprise_new":
+        return registration_screen(connection, actor, now, arguments.strip())
     if command == "/checklist_setup":
         return chat_admin.checklist_setup_screen(connection, actor, now, arguments.strip())
     if command == "/route_tests":
