@@ -5,9 +5,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from ama_rs.chat_menu import Screen
 from ama_rs.db import create_database_engine
 from ama_rs.integrations import ingest_iiko, run_bot_command, valid_signature
-from ama_rs.messengers import normalize, send_message
+from ama_rs.messengers import acknowledge_callback, normalize, send_message
 from ama_rs.processes import ProcessConflict
 
 WEBHOOKS = {
@@ -77,7 +78,10 @@ def main() -> None:
                         send_message(source, token, {
                             "id": actor.chat_id, "topic_id": actor.topic_id,
                             "kind": "personal" if actor.chat_id == actor.user_id else "group",
-                        }, response)
+                        }, response.text if isinstance(response, Screen) else response,
+                            buttons=response.buttons if isinstance(response, Screen) else ())
+                    if message.callback_id and token:
+                        acknowledge_callback(source, token, message.callback_id)
             except ProcessConflict:
                 self.reply(409, b"Event requires configuration or prior state\n")
                 return

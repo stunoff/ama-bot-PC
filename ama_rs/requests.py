@@ -11,6 +11,7 @@ from ama_rs.processes import (
     create_card, enqueue, get_card, start_timer, utc_value,
 )
 from ama_rs.shifts import route
+from ama_rs.timing import effective
 
 WORK_ROLES = {
     "task": {"service_account", "employee", "manager"},
@@ -27,7 +28,7 @@ CHECKS = {
     "equipment": ("power", "connection"),
     "other": ("inspect",),
 }
-SLA = {"normal": (15, 30, 60), "high": (10, 20, 30), "critical": (5, 10, 15)}
+PRIORITIES = {"normal", "high", "critical"}
 
 
 def settings_for(connection: Connection, enterprise_id: str) -> dict:
@@ -132,7 +133,7 @@ def open_technical_request(
         value not in {"done", "unavailable"} for value in checks.values()
     ):
         raise ProcessConflict("Complete the category's diagnostic checks")
-    if priority not in SLA or not description.strip():
+    if priority not in PRIORITIES or not description.strip():
         raise ValueError("Technical request requires a priority and description")
     hour = now.astimezone(ZoneInfo("Europe/Moscow")).hour
     night = not 9 <= hour < 20
@@ -147,7 +148,7 @@ def open_technical_request(
     enqueue(connection, request["id"], "assignment", destination, {"kind": "card"}, now)
     if request["revision"] == 1:
         names = ("acceptance", "reminder", "breach")
-        minutes = (5, 15, 25) if night else SLA[priority]
+        minutes = effective(settings, f"technical.{'vipart' if night else priority}")
         for name, delay in zip(names, minutes):
             start_timer(connection, request["id"], name, now, timedelta(minutes=delay))
     return request

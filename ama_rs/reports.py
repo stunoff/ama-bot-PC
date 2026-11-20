@@ -160,7 +160,7 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
 
 
 def accessible_summaries(connection: Connection, actor: Actor, now: datetime,
-                         day_start: date, day_end: date) -> list[dict]:
+                         day_start: date | None = None, day_end: date | None = None) -> list[dict]:
     result = []
     for entry in connection.execute(select(enterprises.c.id, enterprises.c.settings)).mappings():
         settings = entry["settings"]
@@ -168,7 +168,9 @@ def accessible_summaries(connection: Connection, actor: Actor, now: datetime,
             has_role(settings, actor, grant["chat"], grant["role"], now)
             for grant in settings["grants"] if grant["role"] in REPORT_ROLES
         ):
-            result.append(summary(connection, entry["id"], day_start, day_end))
+            end = day_end if day_end is not None else now.astimezone(ZoneInfo(settings["timezone"])).date()
+            start = day_start if day_start is not None else end - timedelta(days=1)
+            result.append(summary(connection, entry["id"], start, end))
     if not result:
         raise ProcessPermissionError("No accessible enterprise reports")
     return result

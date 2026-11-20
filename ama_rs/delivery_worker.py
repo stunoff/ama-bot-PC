@@ -5,8 +5,9 @@ import time
 from datetime import UTC, date, datetime, timedelta
 from urllib.error import HTTPError
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
+from ama_rs.chat_menu import buttons
 from ama_rs.db import create_database_engine
 from ama_rs.messengers import definitely_rejected, send_message
 from ama_rs.processes import attachments, claim_delivery, deliveries, finish_delivery, get_card, utc_value
@@ -90,6 +91,7 @@ def main() -> None:
         now = datetime.now(UTC)
         if time.monotonic() >= next_report_scan:
             with engine.begin() as connection:
+                connection.execute(delete(buttons).where(buttons.c.expires_at <= utc_value(now)))
                 schedule_reports(connection, now)
             next_report_scan = time.monotonic() + 60
         with engine.begin() as connection:

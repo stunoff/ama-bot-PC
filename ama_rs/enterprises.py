@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import JSON, Column, Integer, MetaData, String, Table, insert, select, update
 from sqlalchemy.engine import Connection
 
+from ama_rs.timing import validate_overrides
+
 metadata = MetaData()
 enterprises = Table(
     "enterprises", metadata,
@@ -105,6 +107,7 @@ def validate_settings(settings: dict) -> None:
     ) or len(set(brands)) != len(brands):
         raise ValueError("At least one distinct brand is required")
 
+    validate_overrides(settings.get("timing_overrides", {}))
     shifts = settings.get("shift_schedule")
     if shifts is not None:
         _wall_time(shifts["service_starts_at"])
@@ -120,6 +123,12 @@ def validate_settings(settings: dict) -> None:
             raise ValueError(f"Unsupported chat platform for {key}")
         if chat.get("kind") not in set().union(*ROLE_CHATS.values()):
             raise ValueError(f"Unsupported chat kind for {key}")
+        if "general_topic_id" in chat:
+            topic = chat["general_topic_id"]
+            if chat["platform"] != "telegram" or chat["kind"] != "technical" or (
+                topic is not None and (not isinstance(topic, str) or not topic.isdecimal())
+            ):
+                raise ValueError("General topic requires an explicit Telegram technical forum topic")
         if "topic_id" in chat:
             _required_text(chat, "topic_id", 128)
         if "timezone" in chat:
@@ -200,13 +209,13 @@ def has_role(
     chat = settings["chats"].get(chat_key)
     if chat is None or (chat["platform"], chat["id"]) != (actor.platform, actor.chat_id):
         return False
-    if chat.get("topic_id") is not None and chat["topic_id"] != actor.topic_id:
+    if role == "system_admin":
+        if actor.platform != "telegram" or "general_topic_id" not in chat or chat["general_topic_id"] != actor.topic_id:
+            return False
+    elif chat.get("topic_id") is not None and chat["topic_id"] != actor.topic_id:
         return False
     if work and (role, chat["kind"]) in CONTROL_ONLY:
         return False
-    if work and actor.platform == "telegram" and role == "system_admin":
-        if actor.topic_id not in (None, "1"):
-            return False
     current_roles = {
         grant["role"] for grant in settings["grants"]
         if grant["chat"] == chat_key and grant["user"] == actor.user_id

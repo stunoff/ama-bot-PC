@@ -13,6 +13,7 @@ from ama_rs.processes import (
 )
 from ama_rs.requests import _validate_recipient, settings_for
 from ama_rs.shifts import route
+from ama_rs.timing import effective
 
 SUBMISSION_ROLES = {"service_account", "operator", "senior_operator"}
 
@@ -53,7 +54,7 @@ def request_refund(connection: Connection, enterprise_id: str, source_key: str,
     enqueue(connection, card["id"], "financial-request", financial_chat, {"kind": "card"}, now)
     enqueue(connection, card["id"], "management-info", management, {"kind": "financial_status"}, now)
     if card["revision"] == 1:
-        start_timer(connection, card["id"], "financial_deadline", now, timedelta(hours=24))
+        start_timer(connection, card["id"], "financial_deadline", now, timedelta(minutes=effective(settings, "refund.execution")[0]))
     return card
 
 

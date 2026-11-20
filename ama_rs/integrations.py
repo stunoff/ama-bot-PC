@@ -12,6 +12,8 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import NoResultFound
 
 from ama_rs.bot_actions import workflow_action
+from ama_rs import chat_admin
+from ama_rs.chat_menu import Screen, consume, menu, screen
 from ama_rs.contact_center import take_operation
 from ama_rs.enterprises import Actor, enterprises, has_role
 from ama_rs.messengers import Message
@@ -60,13 +62,16 @@ def _scope(settings: dict, actor: Actor, now: datetime) -> list[str]:
     )]
 
 
-def run_bot_command(connection: Connection, message: Message, now: datetime) -> str | None:
+COMMANDS = {
+    "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result",
+    "/step", "/photo", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help",
+}
+
+
+def run_bot_command(connection: Connection, message: Message, now: datetime) -> str | Screen | None:
     """Handle supported commands using the authenticated messenger actor."""
-    command, _, arguments = message.text.strip().partition(" ")
-    command = command.split("@", 1)[0].lower()
-    if command not in {
-        "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result", "/step", "/photo", "/report", "/workflow", "/link"
-    }:
+    text = message.text.strip()
+    if not message.callback_id and text.partition(" ")[0].split("@", 1)[0].lower() not in COMMANDS:
         return None
     if not claim_event(connection, message.actor.platform, message.event_id, now):
         return None
@@ -74,6 +79,18 @@ def run_bot_command(connection: Connection, message: Message, now: datetime) -> 
     actor = message.actor
     command_id = hashlib.sha256(f"{actor.platform}:{message.event_id}".encode()).hexdigest()
     try:
+        if message.callback_id:
+            callback = consume(connection, actor, now, text)
+            if "admin_save" in callback:
+                with connection.begin_nested():
+                    return chat_admin.save(connection, actor, now, callback["admin_save"])
+            if "report" in callback:
+                reports = accessible_summaries(connection, actor, now)
+                return "\n\n".join(map(format_summary, reports))[:3800]
+            else:
+                text = callback["text"]
+        command, _, arguments = text.partition(" ")
+        command = command.split("@", 1)[0].lower()
         with connection.begin_nested():
             return _dispatch(connection, command, arguments, command_id, actor, now, message.file_id)
     except (ProcessConflict, ProcessPermissionError, ValueError, TypeError, LookupError, NoResultFound, AttributeError):
@@ -81,7 +98,15 @@ def run_bot_command(connection: Connection, message: Message, now: datetime) -> 
 
 
 def _dispatch(connection: Connection, command: str, arguments: str, command_id: str,
-              actor: Actor, now: datetime, file_id: str | None) -> str:
+              actor: Actor, now: datetime, file_id: str | None) -> str | Screen:
+    if command in {"/settings", "/timers"}:
+        return chat_admin.settings_screen(connection, actor, now, arguments.strip())
+    if command == "/settings_help":
+        if not chat_admin.admin_scope(connection, actor, now):
+            raise ProcessPermissionError("Administration requires General")
+        return f"/configure {arguments} <поле> <JSON>\nПоля: " + ", ".join(sorted(chat_admin.EDITABLE))
+    if command == "/configure":
+        return chat_admin.preview(connection, actor, now, arguments)
     if command == "/workflow":
         return workflow_action(connection, arguments, command_id, actor, now, file_id=file_id)
     if command == "/link" or (command == "/start" and arguments.startswith("invite_")):
@@ -89,21 +114,14 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
         claim_invite(connection, token, actor, now)
         return "Аккаунт ожидает подтверждения руководителем."
     if command in {"/start", "/menu"}:
-        return ("АМА РС\n/tasks — назначенные карточки\n"
-                "/problem <предприятие> <описание> — сообщить проблему\n"
-                "/take <ID> <версия> — взять в работу\n"
-                "/result <ID> <версия> <результат> — передать результат\n"
-                "/step <ID> <версия> <пункт> <итог> — завершить пункт\n"
-                "/photo <ID> <пункт> <слот> — подпись к фото\n"
-                "/accept <ID> <версия> — принять чек-лист или кассу\n"
-                "/report <дата начала> <дата конца> — сводка до даты конца\n"
-                "/workflow — формы процессов")
+        return menu(connection, actor, now)
     if command == "/report":
         start, end = (date.fromisoformat(value) for value in arguments.split())
         reports = accessible_summaries(connection, actor, now, start, end)
         return "\n\n".join(map(format_summary, reports))[:3800]
     if command == "/tasks":
         lines = []
+        links = []
         for entry in connection.execute(select(enterprises)).mappings():
             scope = _scope(entry["settings"], actor, now)
             if not scope:
@@ -122,7 +140,15 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
                         if step["photos"]:
                             text += f" ({', '.join(step['photos'])})"
                     lines.append(text)
-        return "\n".join(lines[:20])[:3800] or "Нет доступных активных карточек."
+                    if len(links) < 10 and has_role(entry["settings"], actor, target["chat"], target["role"], now):
+                        identifier = f"{row['id']} {row['revision']}"
+                        if row["status"] == "review" and row["kind"] in {"cash_shift", "morning_checklist", "evening_checklist"}:
+                            links.append((f"Принять · {row['id'][:8]}", {"text": f"/accept {identifier}"}))
+                        if row["status"] == "open" and row["kind"] in {"task", "refund", "technical"}:
+                            if target["role"] != "vipart_specialist":
+                                links.append((f"Взять · {row['id'][:8]}", {"text": f"/take {identifier}"}))
+        return screen(connection, actor, now,
+                      "\n".join(lines[:20])[:3800] or "Нет доступных активных карточек.", links)
     if command == "/problem":
         enterprise_id, _, description = arguments.partition(" ")
         card = report_problem(connection, enterprise_id, command_id, description, actor, now)

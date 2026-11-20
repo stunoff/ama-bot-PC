@@ -24,7 +24,7 @@ engine = create_database_engine()
 with engine.begin() as conn:
     save_enterprise(conn, settings, 0, "test")
     example = normalize("telegram", {"update_id": 88, "message": {"text": "/menu", "from": {"id": 2}, "chat": {"id": 1}}})
-    assert "/tasks" in run_bot_command(conn, example, datetime.now(UTC))
+    assert run_bot_command(conn, example, datetime.now(UTC)).buttons
     assert run_bot_command(conn, example, datetime.now(UTC)) is None
 try:
     payload = json.dumps({"id": "webhook-event", "enterprise_id": settings["iiko_id"], "type": "staff.updated",
