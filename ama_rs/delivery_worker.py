@@ -11,7 +11,7 @@ from ama_rs.chat_menu import buttons
 from ama_rs.db import create_database_engine
 from ama_rs.messengers import definitely_rejected, send_message
 from ama_rs.processes import attachments, claim_delivery, deliveries, finish_delivery, get_card, utc_value
-from ama_rs.reminders import queue_due_reminders
+from ama_rs.reminders import after_delivery, queue_due_reminders
 from ama_rs.reports import format_summary, schedule_reports, summary
 
 
@@ -81,7 +81,9 @@ def deliver_batch(engine, now: datetime) -> None:
             continue
         else:
             with engine.begin() as connection:
-                finish_delivery(connection, delivery_id, record["attempt_id"], external_id=external_id)
+                get_card(connection, record["card_id"], lock=True)
+                if finish_delivery(connection, delivery_id, record["attempt_id"], external_id=external_id):
+                    after_delivery(connection, record, datetime.now(UTC))
 
 
 def main() -> None:

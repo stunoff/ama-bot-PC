@@ -167,6 +167,25 @@ def apply_action(
         status=status, revision=revision, assignment=assignment or assigned_to,
         data=current["data"] | (updates or {}),
     ))
+    clock_keys = None
+    if current["kind"] == "refund" and status not in {"executed", "not_required", "closed"}:
+        clock_keys = ("refund_reminder_1", "refund_reminder_2", "refund_reminder_3",
+                      "financial_deadline", "refund_followup")
+    elif current["kind"] == "task" and current["status"] in {"open", "working"} and status == "working":
+        clock_keys = ("execution", "execution_warning", "execution_escalation")
+    if clock_keys:
+        connection.execute(update(timers).where(
+            timers.c.card_id == card_id, timers.c.card_revision == current["revision"],
+            timers.c.key.in_(clock_keys),
+        ).values(card_revision=revision))
+        pending = connection.execute(select(deliveries.c.id, deliveries.c.payload).where(
+            deliveries.c.card_id == card_id, deliveries.c.state == "pending",
+            deliveries.c.signal.startswith("timer:"),
+        ).with_for_update()).all()
+        for record in pending:
+            if record.payload.get("timer") in clock_keys:
+                connection.execute(update(deliveries).where(deliveries.c.id == record.id).values(
+                    payload=record.payload | {"card_revision": revision}))
     connection.execute(insert(actions).values(
         card_id=card_id, command_id=command_id, revision=revision, actor=identity,
         action=transition.name, input=payload, previous_status=current["status"],

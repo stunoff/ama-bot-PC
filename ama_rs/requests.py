@@ -75,7 +75,12 @@ def make_task(connection: Connection, enterprise_id: str, source_key: str, title
         now, parent_id=parent_id)
     enqueue(connection, task["id"], "assignment", recipient["chat"], {"kind": "card"}, now)
     if task["revision"] == 1:
-        start_timer(connection, task["id"], "execution", now, due_at - now)
+        duration = due_at - now
+        advance = timedelta(minutes=15 if duration <= timedelta(hours=2) else 60)
+        if duration > advance:
+            start_timer(connection, task["id"], "execution_warning", now, duration - advance)
+        start_timer(connection, task["id"], "execution", now, duration)
+        start_timer(connection, task["id"], "execution_escalation", now, duration + timedelta(minutes=30))
     return task
 
 

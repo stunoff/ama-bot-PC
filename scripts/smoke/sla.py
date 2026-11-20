@@ -1,0 +1,73 @@
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import select
+
+from ama_rs.db import create_database_engine
+from ama_rs.enterprises import Actor, save_enterprise
+from ama_rs.processes import claim_delivery, deliveries, finish_delivery, timers
+from ama_rs.refunds import ask_refund_question, request_refund, take_refund
+from ama_rs.reminders import after_delivery, queue_due_reminders
+from ama_rs.requests import make_task, submit_result, take_request
+
+now = datetime(2026, 11, 23, 10, tzinfo=UTC)
+kinds = ("enterprise", "management", "refunds", "branch")
+roles = ("service_account", "manager", "finance_executor", "branch_lead")
+settings = {
+    "id": "sla-test", "iiko_id": "sla-test", "name": "Demo", "timezone": "Europe/Moscow",
+    "format": "delivery", "server_address": "server.invalid", "lm_address": "lm.invalid",
+    "contact_mode": "independent", "final_route": "headquarters", "brands": ["Demo"],
+    "chats": {kind: {"kind": kind, "id": str(i), "platform": "telegram", "calendar": "always"}
+              for i, kind in enumerate(kinds)},
+    "grants": [{"chat": kind, "role": role, "user": str(i)}
+               for i, (kind, role) in enumerate(zip(kinds, roles))],
+}
+settings["chats"]["management"]["calendar"] = [
+    {"weekday": 0, "start": "13:00", "end": "13:15"},
+    {"weekday": 1, "start": "13:00", "end": "15:00"},
+]
+worker, manager, finance = (Actor("telegram", str(i), str(i)) for i in range(3))
+with create_database_engine().begin() as conn:
+    save_enterprise(conn, settings, 0, "test")
+    refund = request_refund(conn, settings["id"], "refund", "Demo", "Order 1", "Reason", 500,
+                            worker, now)
+    refund_id = refund["id"]
+    assert take_refund(conn, refund_id, "take", 1, finance, now + timedelta(minutes=5)) == 2
+    assert ask_refund_question(conn, refund_id, "question", 2, "Question", finance,
+                               now + timedelta(minutes=10)) == 3
+    deadline = conn.execute(select(timers).where(timers.c.card_id == refund_id,
+                            timers.c.key == "financial_deadline")).mappings().one()
+    assert deadline["card_revision"] == 3
+    assert deadline["due_at"] == (now + timedelta(hours=24)).replace(tzinfo=None)
+    late = now + timedelta(hours=24)
+    queue_due_reminders(conn, late)
+    financial = conn.execute(select(deliveries).where(deliveries.c.card_id == refund_id,
+                             deliveries.c.signal.like("timer:%"))).mappings().one()
+    assert financial["chat_key"] == "refunds"
+    assert financial["payload"]["await_financial_receipt"]
+    claimed = claim_delivery(conn, financial["id"], late)
+    assert finish_delivery(conn, financial["id"], claimed["attempt_id"], external_id="msg1")
+    after_delivery(conn, claimed, late)
+    queue_due_reminders(conn, late + timedelta(minutes=9))
+    assert conn.scalar(select(deliveries.c.id).where(deliveries.c.card_id == refund_id,
+                       deliveries.c.chat_key == "branch")) is None
+    queue_due_reminders(conn, late + timedelta(minutes=10))
+    assert conn.scalar(select(deliveries.c.id).where(deliveries.c.card_id == refund_id,
+                       deliveries.c.chat_key == "branch"))
+
+    task = make_task(conn, settings["id"], "task", "Fix", "Working", now + timedelta(hours=1),
+                     {"chat": "enterprise", "role": "service_account", "user": "0"},
+                     {"chat": "management", "role": "manager"}, manager, now)
+    assert take_request(conn, task["id"], "take", 1, worker, now) == 2
+    assert submit_result(conn, task["id"], "submit", 2, worker, "Fixed", now) == 3
+    assert conn.scalar(select(timers.c.key).where(timers.c.card_id == task["id"],
+                       timers.c.key == "review_reminder")) is None
+    review = conn.scalar(select(deliveries.c.id).where(deliveries.c.card_id == task["id"],
+                         deliveries.c.signal == "review:3"))
+    claimed = claim_delivery(conn, review, now)
+    assert finish_delivery(conn, review, claimed["attempt_id"], external_id="msg2")
+    after_delivery(conn, claimed, now)
+    stored = conn.scalar(select(timers.c.due_at).where(timers.c.card_id == task["id"],
+                         timers.c.key == "review_reminder"))
+    assert stored == (now + timedelta(days=1, minutes=15)).replace(tzinfo=None)
+    conn.rollback()
+print("Unchanged financial deadline, first-delivery escalation gate and working-time review SLA verified")

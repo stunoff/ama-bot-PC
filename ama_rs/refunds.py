@@ -54,7 +54,11 @@ def request_refund(connection: Connection, enterprise_id: str, source_key: str,
     enqueue(connection, card["id"], "financial-request", financial_chat, {"kind": "card"}, now)
     enqueue(connection, card["id"], "management-info", management, {"kind": "financial_status"}, now)
     if card["revision"] == 1:
-        start_timer(connection, card["id"], "financial_deadline", now, timedelta(minutes=effective(settings, "refund.execution")[0]))
+        *reminders, deadline = effective(settings, "refund.execution")
+        for index, minutes in enumerate(reminders, start=1):
+            start_timer(connection, card["id"], f"refund_reminder_{index}", now,
+                        timedelta(minutes=minutes))
+        start_timer(connection, card["id"], "financial_deadline", now, timedelta(minutes=deadline))
     return card
 
 
