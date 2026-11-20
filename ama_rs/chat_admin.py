@@ -6,15 +6,12 @@ from datetime import datetime
 
 from sqlalchemy.engine import Connection
 
-from ama_rs.chat_menu import admin_scope, screen
-from ama_rs.enterprises import Actor, save_enterprise, validate_settings
+from ama_rs.admin_permissions import ADMIN_ROLES
+from ama_rs.chat_menu import admin_scope, configuration_fields, screen
+from ama_rs.enterprises import Actor, has_role, save_enterprise, validate_settings
 from ama_rs.processes import ProcessPermissionError
 from ama_rs.shifts import route
 from ama_rs.timing import DEFAULTS, effective
-
-EDITABLE = {"name", "timezone", "format", "shift_schedule", "facilities", "contact_mode",
-            "final_route", "scheduled_reports", "scheduled_checklists", "timing_overrides", "chat_calendar"}
-
 
 def _entry(connection: Connection, actor: Actor, now: datetime, enterprise_id: str):
     entry = next((entry for entry in admin_scope(connection, actor, now)
@@ -24,8 +21,25 @@ def _entry(connection: Connection, actor: Actor, now: datetime, enterprise_id: s
     return entry
 
 
-def _summary(entry) -> str:
+def help_text(connection: Connection, actor: Actor, now: datetime, enterprise_id: str) -> str:
+    entry = _entry(connection, actor, now, enterprise_id)
+    fields = configuration_fields(entry["settings"], actor, now)
+    return f"/configure {enterprise_id} <поле> <JSON>\nПоля: " + ", ".join(sorted(fields))
+
+
+def _summary(entry, fields: frozenset[str]) -> str:
     data = entry["settings"]
+    if "admin_access" not in fields:
+        values = {}
+        for field in sorted(fields):
+            if field == "chat_calendar":
+                values[field] = {key: chat.get("calendar") for key, chat in data["chats"].items()}
+            elif field == "timing_overrides":
+                values[field] = {key: effective(data, key) for key in DEFAULTS}
+            else:
+                values[field] = data.get(field)
+        return (f"{entry['id']} · версия {entry['revision']}\n" +
+                json.dumps(values, ensure_ascii=False, indent=2))[:3800]
     missing = [key for key, chat in data["chats"].items() if chat.get("calendar") is None]
     schedule = data.get("shift_schedule", {})
     return (f"{data['name']} · {entry['id']} · версия {entry['revision']}\n"
@@ -43,7 +57,8 @@ def _summary(entry) -> str:
 def settings_screen(connection: Connection, actor: Actor, now: datetime, enterprise_id: str = ""):
     if enterprise_id:
         entry = _entry(connection, actor, now, enterprise_id)
-        return screen(connection, actor, now, _summary(entry), [
+        fields = configuration_fields(entry["settings"], actor, now)
+        return screen(connection, actor, now, _summary(entry, fields), [
             ("Как изменить", {"text": f"/settings_help {enterprise_id}"}),
             ("Назад", {"text": "/settings"}),
         ])
@@ -51,18 +66,22 @@ def settings_screen(connection: Connection, actor: Actor, now: datetime, enterpr
     if not allowed:
         raise ProcessPermissionError("Administration requires the assigned General context")
     return screen(connection, actor, now, "Администрирование · выберите предприятие", [
-        (entry["settings"]["name"][:60], {"text": f"/settings {entry['id']}"}) for entry in allowed[:20]
+        ((entry["settings"]["name"] if "name" in configuration_fields(
+            entry["settings"], actor, now
+        ) else entry["id"])[:60], {"text": f"/settings {entry['id']}"}) for entry in allowed[:20]
     ])
 
 
 def preview(connection: Connection, actor: Actor, now: datetime, arguments: str):
     enterprise_id, field, raw = arguments.split(maxsplit=2)
     entry = _entry(connection, actor, now, enterprise_id)
-    if field not in EDITABLE:
-        raise ValueError("Field is unavailable from chat")
+    if field not in configuration_fields(entry["settings"], actor, now):
+        raise ProcessPermissionError("Field is outside this administrator's scope")
     value = json.loads(raw)
-    _change(entry["settings"], field, value)
+    _change(entry["settings"], field, value, now)
     previous = entry["settings"].get(field)
+    if field == "admin_access":
+        previous = _matching_grants(entry["settings"], value)
     if field == "chat_calendar":
         previous = entry["settings"]["chats"][value["chat"]].get("calendar")
     before = json.dumps(previous, ensure_ascii=False)
@@ -70,17 +89,48 @@ def preview(connection: Connection, actor: Actor, now: datetime, arguments: str)
     if max(len(before), len(after)) > 500:
         raise ValueError("Preview is too long")
     return screen(connection, actor, now,
-        f"{entry['settings']['name']} · {field}\nБыло: {before}\nБудет: {after}\n"
+        f"{enterprise_id} · {field}\nБыло: {before}\nБудет: {after}\n"
         f"Версия {entry['revision']} · применяется после сохранения",
         [("Сохранить", {"admin_save": {"id": enterprise_id, "revision": entry["revision"],
                                        "field": field, "value": value}}),
          ("Отмена", {"text": f"/settings {enterprise_id}"})])
 
 
-def _change(settings: dict, field: str, value) -> dict:
+def _matching_grants(settings: dict, rule: dict) -> list[dict]:
+    return [grant for grant in settings["grants"] if grant["role"] in ADMIN_ROLES
+            and grant["chat"] == rule["chat"] and grant["user"] == rule["user"]]
+
+
+def _change_access(settings: dict, rule: dict, now: datetime) -> None:
+    if set(rule) != {"chat", "user", "access"} or not isinstance(rule["user"], str):
+        raise ValueError("Expected chat, Telegram user ID and access")
+    if not rule["user"].isascii() or not rule["user"].isdecimal() or not 1 <= len(rule["user"]) <= 20:
+        raise ValueError("Expected a Telegram user ID")
+    target = settings["chats"].get(rule["chat"], {})
+    if target.get("platform") != "telegram" or "general_topic_id" not in target:
+        raise ValueError("Choose a registered admin forum")
+    matching = _matching_grants(settings, rule)
+    settings["grants"] = [grant for grant in settings["grants"] if grant not in matching]
+    if rule["access"] is not None:
+        role = "system_admin" if rule["access"] == "full" else "delegated_admin"
+        grant = {"chat": rule["chat"], "user": rule["user"], "role": role}
+        if role == "delegated_admin":
+            grant["fields"] = rule["access"]
+        settings["grants"].append(grant)
+    for grant in settings["grants"]:
+        if grant["role"] != "system_admin" or "ends_at" in grant:
+            continue
+        chat = settings["chats"][grant["chat"]]
+        actor = Actor(chat["platform"], grant["user"], chat["id"], chat.get("general_topic_id"))
+        if has_role(settings, actor, grant["chat"], "system_admin", now):
+            return
+    raise ProcessPermissionError("At least one permanent active administrator is required")
+
+
+def _change(settings: dict, field: str, value, now: datetime) -> dict:
     expected = {"scheduled_reports": bool, "scheduled_checklists": bool,
                 "facilities": list, "shift_schedule": dict, "timing_overrides": dict,
-                "chat_calendar": dict}.get(field, str)
+                "chat_calendar": dict, "admin_access": dict}.get(field, str)
     if type(value) is not expected:
         raise ValueError("Invalid setting value")
     if field == "facilities" and (any(type(item) is not str for item in value)
@@ -101,6 +151,8 @@ def _change(settings: dict, field: str, value) -> dict:
         ):
             raise ValueError("Unexpected calendar fields")
         result["chats"][value["chat"]]["calendar"] = calendar
+    elif field == "admin_access":
+        _change_access(result, value, now)
     else:
         result[field] = value
     validate_settings(result)
@@ -115,8 +167,8 @@ def _change(settings: dict, field: str, value) -> dict:
 def save(connection: Connection, actor: Actor, now: datetime, command: dict) -> str:
     entry = _entry(connection, actor, now, command["id"])
     field = command["field"]
-    if field not in EDITABLE:
-        raise ValueError("Field is unavailable from chat")
-    revised = _change(entry["settings"], field, command["value"])
+    if field not in configuration_fields(entry["settings"], actor, now):
+        raise ProcessPermissionError("Field is outside this administrator's scope")
+    revised = _change(entry["settings"], field, command["value"], now)
     revision = save_enterprise(connection, revised, command["revision"], f"{actor.platform}:{actor.user_id}")
     return f"Настройки сохранены. Версия {revision}."

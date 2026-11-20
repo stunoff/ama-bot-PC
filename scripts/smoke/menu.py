@@ -48,6 +48,30 @@ with create_database_engine().begin() as conn:
         conn, Message("m9", admin, dict(expired.buttons)["Сохранить"], callback_id="cb9"),
         now + timedelta(minutes=31),
     )
+    def command(number, actor, text, callback=False):
+        return run_bot_command(
+            conn, Message(f"delegation:{number}", actor, text, callback_id="ck" if callback else None), now
+        )
+
+    assert "недоступно" in command(
+        1, admin, '/configure menu-test admin_access {"chat":"technical","user":"8","access":null}'
+    )
+    grant = command(2, admin,
+        '/configure menu-test admin_access {"chat":"technical","user":"9","access":["scheduled_reports"]}')
+    assert "Версия 3" in command(3, admin, dict(grant.buttons)["Сохранить"], callback=True)
+    overview = command(4, outsider, "/settings menu-test")
+    assert "scheduled_reports" in overview.text and "Часовой пояс" not in overview.text
+    assert "admin_access" not in command(5, outsider, "/settings_help menu-test")
+    assert "недоступно" in command(6, outsider, '/configure menu-test name "Other"')
+    assert "недоступно" in command(7, outsider,
+        '/configure menu-test admin_access {"chat":"technical","user":"9","access":"full"}')
+    change = command(8, outsider, '/configure menu-test scheduled_reports true')
+    assert "Версия 4" in command(9, outsider, dict(change.buttons)["Сохранить"], callback=True)
+    pending = command(10, outsider, '/configure menu-test scheduled_reports false')
+    revoke = command(11, admin, '/configure menu-test admin_access {"chat":"technical","user":"9","access":null}')
+    assert "Версия 5" in command(12, admin, dict(revoke.buttons)["Сохранить"], callback=True)
+    assert "недоступно" in command(13, outsider, dict(pending.buttons)["Сохранить"], callback=True)
+    assert get_enterprise(conn, "menu-test")["settings"]["scheduled_reports"] is True
     conn.rollback()
 
 with patch("ama_rs.messengers._post", return_value={"message": {"body": {"mid": "1"}}}) as post:

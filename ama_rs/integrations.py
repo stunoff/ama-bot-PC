@@ -102,9 +102,7 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
     if command in {"/settings", "/timers"}:
         return chat_admin.settings_screen(connection, actor, now, arguments.strip())
     if command == "/settings_help":
-        if not chat_admin.admin_scope(connection, actor, now):
-            raise ProcessPermissionError("Administration requires General")
-        return f"/configure {arguments} <поле> <JSON>\nПоля: " + ", ".join(sorted(chat_admin.EDITABLE))
+        return chat_admin.help_text(connection, actor, now, arguments.strip())
     if command == "/configure":
         return chat_admin.preview(connection, actor, now, arguments)
     if command == "/workflow":

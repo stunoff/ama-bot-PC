@@ -7,6 +7,7 @@ from uuid import uuid4
 from sqlalchemy import JSON, Column, DateTime, MetaData, String, Table, delete, insert, select
 from sqlalchemy.engine import Connection
 
+from ama_rs.admin_permissions import EDITABLE
 from ama_rs.enterprises import Actor, enterprises, has_role
 from ama_rs.processes import ProcessPermissionError, utc_value
 
@@ -47,14 +48,24 @@ def consume(connection: Connection, actor: Actor, now: datetime, key: str) -> di
     return record["command"]
 
 
+def configuration_fields(settings: dict, actor: Actor, now: datetime) -> frozenset[str]:
+    if any(has_role(settings, actor, key, "system_admin", now) for key in settings["chats"]):
+        return EDITABLE | {"admin_access"}
+    return frozenset(
+        field for grant in settings["grants"]
+        if grant["role"] == "delegated_admin" and grant["user"] == actor.user_id
+        and has_role({**settings, "grants": [grant]}, actor, grant["chat"], "delegated_admin", now)
+        for field in grant["fields"]
+    )
+
+
 def admin_scope(connection: Connection, actor: Actor, now: datetime):
     if actor.platform != "telegram":
         return []
     entries = connection.execute(select(enterprises).order_by(enterprises.c.id)).mappings()
     return [
         entry for entry in entries
-        if any(has_role(entry["settings"], actor, key, "system_admin", now)
-               for key in entry["settings"]["chats"])
+        if configuration_fields(entry["settings"], actor, now)
     ]
 
 

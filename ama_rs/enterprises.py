@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import JSON, Column, Integer, MetaData, String, Table, insert, select, update
 from sqlalchemy.engine import Connection
 
+from ama_rs.admin_permissions import ADMIN_ROLES, EDITABLE
 from ama_rs.timing import validate_overrides
 
 metadata = MetaData()
@@ -38,6 +39,7 @@ ROLE_CHATS = {
     "operations_director": {"headquarters"},
     "general_director": {"headquarters"},
     "system_admin": {"technical"},
+    "delegated_admin": {"technical"},
     "franchise_partner": {"partner"},
     "operator": {"contact_center"},
     "senior_operator": {"contact_center", "contact_management"},
@@ -155,6 +157,12 @@ def validate_settings(settings: dict) -> None:
             _validate_windows(windows, weekly=False)
 
     for grant in settings["grants"]:
+        if grant.get("role") == "delegated_admin":
+            fields = grant.get("fields")
+            if (not isinstance(fields, list) or not fields
+                    or any(not isinstance(field, str) or field not in EDITABLE for field in fields)
+                    or len(fields) != len(set(fields))):
+                raise ValueError("Delegation requires distinct supported settings fields")
         chat = settings["chats"].get(grant["chat"])
         if chat is None or chat["kind"] not in ROLE_CHATS.get(grant["role"], ()):
             raise ValueError("Role and chat are incompatible")
@@ -217,7 +225,7 @@ def has_role(
     chat = settings["chats"].get(chat_key)
     if chat is None or (chat["platform"], chat["id"]) != (actor.platform, actor.chat_id):
         return False
-    if role == "system_admin":
+    if role in ADMIN_ROLES:
         if actor.platform != "telegram" or "general_topic_id" not in chat or chat["general_topic_id"] != actor.topic_id:
             return False
     elif chat.get("topic_id") is not None and chat["topic_id"] != actor.topic_id:
