@@ -6,7 +6,7 @@ from ama_rs.db import create_database_engine
 from ama_rs.enterprises import Actor, save_enterprise
 from ama_rs.processes import cards, claim_delivery, deliveries, finish_delivery, get_card
 from ama_rs.reminders import after_delivery, queue_due_reminders
-from ama_rs.requests import make_task, open_technical_request, review_result, submit_result, take_request
+from ama_rs.requests import make_task, open_technical_request, review_result, set_technical_plan, submit_result, take_request
 
 now = datetime(2026, 11, 23, 9, tzinfo=UTC)
 kinds = ("enterprise", "technical", "technical_management", "headquarters", "management", "branch", "partner")
@@ -59,6 +59,27 @@ with create_database_engine().begin() as conn:
     assert submit_result(conn, source, "result", 2, worker, "Fixed", final) == 3
     assert review_result(conn, source, "review", 3, employee, True, "", final) == 4
     assert get_card(conn, control)["status"] == "closed"
+    second = open_technical_request(conn, settings["id"], "tech-2", "other", {"inspect": "done"},
+        "Issue", "high", {"chat": "enterprise", "role": "service_account"}, employee, now)
+    second_id = second["id"]
+    assert take_request(conn, second_id, "take", 1, worker, now) == 2
+    next_control = select(cards.c.id).where(cards.c.kind == "request_control", cards.c.parent_id == second_id)
+    queue_due_reminders(conn, now + timedelta(minutes=29))
+    assert conn.scalar(next_control) is None
+    queue_due_reminders(conn, now + timedelta(minutes=30))
+    assert conn.scalar(next_control) is not None
+    third = open_technical_request(conn, settings["id"], "tech-3", "other", {"inspect": "done"},
+        "Issue", "critical", {"chat": "enterprise", "role": "service_account"}, employee, now)
+    third_id = third["id"]
+    assert take_request(conn, third_id, "take", 1, worker, now) == 2
+    promised = now + timedelta(hours=1)
+    assert set_technical_plan(conn, third_id, "plan", 2, "Check network", promised, worker, now) == 3
+    planned_control = select(cards.c.id).where(cards.c.kind == "request_control", cards.c.parent_id == third_id)
+    queue_due_reminders(conn, promised)
+    queue_due_reminders(conn, promised + timedelta(minutes=4))
+    assert conn.scalar(planned_control) is None
+    queue_due_reminders(conn, promised + timedelta(minutes=5))
+    assert conn.scalar(planned_control) is not None
     save_enterprise(conn, settings | {"final_route": "partner"}, 1, "test")
     task = make_task(conn, settings["id"], "task", "Inspect", "Verified",
         final + timedelta(minutes=30), {"chat": "enterprise", "role": "service_account", "user": "0"},

@@ -30,6 +30,7 @@ ACTIONS = {
     "request.review": requests.review_result,
     "request.control": accept_request_control,
     "technical.create": requests.open_technical_request,
+    "technical.plan": requests.set_technical_plan,
     "person.confirm": personnel.confirm_link,
     "person.training": personnel.acknowledge_training,
     "person.skill_check": personnel.record_skill_check,

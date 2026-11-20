@@ -14,7 +14,7 @@ from sqlalchemy.exc import NoResultFound
 from ama_rs.bot_actions import workflow_action
 from ama_rs import chat_admin
 from ama_rs.chat_menu import Screen, consume, menu, screen
-from ama_rs.contact_center import take_operation
+from ama_rs.contact_center import OPERATIONS, take_operation
 from ama_rs.enterprises import Actor, enterprises, get_enterprise, has_role
 from ama_rs.messengers import Message
 from ama_rs.personnel import claim_invite, people, record_work_time, synchronize_person
@@ -64,7 +64,7 @@ def _scope(settings: dict, actor: Actor, now: datetime) -> list[str]:
 
 COMMANDS = {
     "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result",
-    "/step", "/photo", "/checklist", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help",
+    "/step", "/photo", "/checklist", "/cash_menu", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help",
 }
 
 
@@ -165,6 +165,26 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
                 f"Если нужно фото, добавьте подпись /photo {card_id} {step} problem\n"
                 f"Затем завершите пункт:\n/step {card_id} {card['revision']} {step} problem " +
                 '{"description":"…"}')
+    if command == "/cash_menu":
+        card_id = arguments.strip()
+        cash = get_card(connection, card_id)
+        if cash["kind"] != "cash_shift" or cash["status"] != "review":
+            raise ProcessConflict("Cash shift is not ready for acceptance")
+        chat = cash["data"]["cash_chat"]
+        settings = get_enterprise(connection, cash["enterprise_id"])["settings"]
+        if not has_role(settings, actor, chat, "cash_reviewer", now):
+            raise ProcessPermissionError("Cash review belongs to another recipient")
+        revision = cash["revision"]
+        choices = (
+            ("Принято без замечаний", "accepted"),
+            ("Принято · расхождение объяснено", "explained"),
+            ("Принято · нужно корректирующее действие", "correction_required"),
+        )
+        links = [(label, {"text": "/workflow cash.accept " + json.dumps(
+            {"cash_id": card_id, "revision": revision, "outcome": outcome}
+        )}) for label, outcome in choices]
+        links.append(("Мои задачи", {"text": "/tasks"}))
+        return screen(connection, actor, now, f"Кассовая смена · {card_id} · версия {revision}", links)
     if command == "/tasks":
         lines = []
         links = []
@@ -188,12 +208,15 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
                     lines.append(text)
                     if len(links) < 10 and has_role(entry["settings"], actor, target["chat"], target["role"], now):
                         identifier = f"{row['id']} {row['revision']}"
-                        if row["status"] == "review" and row["kind"] in {"cash_shift", "morning_checklist", "evening_checklist"}:
+                        if row["status"] == "review" and row["kind"] == "cash_shift":
+                            links.append((f"Открыть приёмку · {row['id'][:8]}",
+                                          {"text": f"/cash_menu {row['id']}"}))
+                        if row["status"] == "review" and row["kind"] in {"morning_checklist", "evening_checklist"}:
                             links.append((f"Принять · {row['id'][:8]}", {"text": f"/accept {identifier}"}))
                         if row["status"] == "filling" and row["kind"] in {"morning_checklist", "evening_checklist"}:
                             links.append((f"Открыть чек-лист · {row['id'][:8]}",
                                           {"text": f"/checklist {row['id']}"}))
-                        if row["status"] == "open" and row["kind"] in {"task", "refund", "technical"}:
+                        if row["status"] == "open" and row["kind"] in (OPERATIONS | {"task", "refund", "technical"}):
                             if target["role"] != "vipart_specialist":
                                 links.append((f"Взять · {row['id'][:8]}", {"text": f"/take {identifier}"}))
         return screen(connection, actor, now,

@@ -6,9 +6,11 @@ from ama_rs.cash_discrepancy import explain_discrepancy, refer_discrepancy
 from ama_rs.contact_center import close_operation, start_operation, take_operation
 from ama_rs.db import create_database_engine
 from ama_rs.enterprises import Actor, save_enterprise
+from ama_rs.integrations import run_bot_command
+from ama_rs.messengers import Message
 from ama_rs.processes import cards, claim_delivery, create_card, deliveries, finish_delivery, get_card
 from ama_rs.reminders import after_delivery, queue_due_reminders
-from ama_rs.shifts import accept_cash, confirm_iiko_closure
+from ama_rs.shifts import confirm_iiko_closure
 
 now = datetime(2026, 11, 20, 9, tzinfo=UTC)
 kinds = ("enterprise", "cash", "management", "branch", "contact_center", "contact_management")
@@ -65,7 +67,13 @@ with create_database_engine().begin() as conn:
     assert conn.scalar(select(deliveries.c.chat_key).where(
         deliveries.c.card_id == cash_id,
         deliveries.c.signal.like("%:cash_review_escalation"))) == "branch"
-    assert accept_cash(conn, cash_id, "accepted", 4, "explained", reviewer, monday_due) == 5
+    denied = run_bot_command(conn, Message("cash-menu-denied", employee, f"/cash_menu {cash_id}"), monday_due)
+    assert "недоступно" in denied
+    menu = run_bot_command(conn, Message("cash-menu", reviewer, f"/cash_menu {cash_id}"), monday_due)
+    explained = dict(menu.buttons)["Принято · расхождение объяснено"]
+    result = run_bot_command(conn, Message("cash-menu-accept", reviewer, explained, callback_id="cb"), monday_due)
+    assert "5" in result
+    assert get_card(conn, cash_id)["data"]["outcome"] == "explained"
 
     operation = start_operation(conn, settings["id"], "delivery", "delivery-1",
                              {"enabled": True, "pickup_minutes": 25, "delivery_minutes": 55}, employee, now)

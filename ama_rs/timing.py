@@ -12,6 +12,7 @@ DEFAULTS = {
     "cash.discrepancy": (30, 45),
     "cash.review_overdue": (120,),
     "operation.take": (5, 10),
+    "operation.order_take": (3, 5),
     "operation.work": (10, 20, 30),
     "operation.stop_work": (10, 20),
     "task.review": (30, 45, 60),

@@ -14,7 +14,7 @@ from ama_rs.timing import effective
 
 TERMINAL = {"closed", "accepted", "executed", "not_required"}
 TIMER_RANK = {
-    "acceptance": 1, "reminder": 2, "breach": 3, "next_action": 4,
+    "acceptance": 1, "reminder": 2, "breach": 3, "next_action": 4, "technical_plan_breach": 5,
     "execution_warning": 1, "execution": 2, "execution_escalation": 3,
     "refund_reminder_1": 1, "refund_reminder_2": 2, "refund_reminder_3": 3,
     "financial_deadline": 4, "refund_followup": 5,
@@ -116,10 +116,11 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
                          ("cash_discrepancy_due", "cash_discrepancy_escalation"),
                          effective(settings, "cash.discrepancy"))
     elif payload.get("kind") == "operation":
-        if card["status"] == "open":
+        if card["status"] == "open" and card["kind"] != "redelivery":
+            profile = "operation.order_take" if card["kind"] in {"order_request", "order_delay"} else "operation.take"
             _delivery_clocks(connection, card, record, settings, delivered_at,
                              ("operation_take_reminder", "operation_take_escalation"),
-                             effective(settings, "operation.take"))
+                             effective(settings, profile))
         if card["kind"] in {"go_list", "delivery", "suspension"}:
             _delivery_clocks(connection, card, record, settings, delivered_at,
                              ("operation_work_reminder", "operation_work_repeat", "operation_work_escalation"),
@@ -132,6 +133,8 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
         if followup == "take" and card["status"] != "open":
             return
         delay = 5 if followup == "take" else 10
+        if followup == "take" and card["kind"] in {"order_request", "order_delay"}:
+            delay = 2
         _delivery_clocks(connection, card, record, settings, delivered_at,
                          (f"operation_{followup}_control_due",), (delay,))
 
@@ -213,7 +216,17 @@ def queue_due_reminders(connection: Connection, now: datetime) -> None:
             if key == "request_control_advance":
                 advance_request_control(connection, card, now)
                 break
-            if ((card["kind"] == "technical" and key == "breach")
+            if card["kind"] == "technical" and key == "next_action" and card["data"].get("next_due"):
+                deadline = datetime.fromisoformat(card["data"]["next_due"])
+                if card["data"].get("night"):
+                    escalations = (deadline + timedelta(minutes=10),)
+                elif card["data"]["priority"] == "critical":
+                    escalations = (deadline + timedelta(minutes=5),)
+                else:
+                    escalations = _work_deadlines(settings, card["assignment"]["chat"], deadline, (10,))
+                for escalation in escalations:
+                    start_timer(connection, card_id, "technical_plan_breach", deadline, escalation - deadline)
+            if ((card["kind"] == "technical" and key in {"breach", "technical_plan_breach"})
                     or (card["kind"] == "task" and key in {"execution_escalation", "review_escalation"})):
                 open_request_control(connection, card, now)
                 if card["kind"] != "technical" or not card["data"].get("night"):

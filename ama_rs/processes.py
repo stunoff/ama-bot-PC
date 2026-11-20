@@ -187,6 +187,9 @@ def apply_action(
                       "financial_deadline", "refund_followup")
     elif current["kind"] == "task" and current["status"] in {"open", "working"} and status == "working":
         clock_keys = ("execution", "execution_warning", "execution_escalation")
+    elif (current["kind"] == "technical" and transition.name == "take"
+            and status == "working" and not (updates or {}).get("next_due")):
+        clock_keys = ("reminder", "breach")
     elif current["kind"] == "cash_shift" and status != "accepted":
         clock_keys = ("cash_review_due", "cash_review_escalation")
     elif current["data"].get("mode") in {"central", "independent"} and status == "working":

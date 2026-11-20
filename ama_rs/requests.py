@@ -165,10 +165,13 @@ def take_request(connection: Connection, card_id: str, command_id: str, revision
                  next_due: datetime | None = None) -> int:
     card = get_card(connection, card_id, lock=True)
     worker = card["data"]["worker"]
-    if card["kind"] == "technical" and worker["role"] == "vipart_specialist" and (
-        not next_action.strip() or next_due is None or utc_value(next_due) <= utc_value(now)
-    ):
-        raise ValueError("VIPART requires a next action and a future deadline")
+    if card["kind"] == "technical":
+        if bool(next_action.strip()) != (next_due is not None):
+            raise ValueError("Provide a next action and its deadline together")
+        if worker["role"] == "vipart_specialist" and next_due is None:
+            raise ValueError("VIPART requires a next action and a future deadline")
+    if next_due is not None and utc_value(next_due) <= utc_value(now):
+        raise ValueError("The next deadline must be in the future")
     updates = {"worker": worker | {"user": actor.user_id}, "next_action": next_action,
                "next_due": next_due.isoformat() if next_due else None}
     new_revision = apply_action(connection, card_id, command_id, revision,
@@ -182,6 +185,21 @@ def take_request(connection: Connection, card_id: str, command_id: str, revision
         if utc_value(due_at) > utc_value(now):
             start_timer(connection, card_id, "execution", now, due_at - now)
     return new_revision
+
+
+def set_technical_plan(connection: Connection, card_id: str, command_id: str, revision: int,
+                       next_action: str, next_due: datetime, actor: Actor, now: datetime) -> int:
+    card = get_card(connection, card_id, lock=True)
+    if card["kind"] != "technical" or not next_action.strip() or utc_value(next_due) <= utc_value(now):
+        raise ValueError("Provide a technical next action and a future deadline")
+    worker = card["data"]["worker"]
+    updated = apply_action(connection, card_id, command_id, revision,
+        Transition("set_technical_plan", frozenset({"working"}), None, frozenset(WORK_ROLES["technical"])),
+        actor, worker["chat"], worker["role"], now,
+        updates={"next_action": next_action, "next_due": next_due.isoformat()})
+    if get_card(connection, card_id)["revision"] == updated:
+        start_timer(connection, card_id, "next_action", now, next_due - now)
+    return updated
 
 
 def submit_result(connection: Connection, card_id: str, command_id: str, revision: int,
