@@ -2,12 +2,12 @@
 
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
 from ama_rs.enterprises import Actor, get_enterprise
 from ama_rs.processes import (
-    ProcessConflict, Transition, actions, apply_action, cards, create_card, enqueue,
+    ProcessConflict, Transition, advance_system_card, apply_action, cards, create_card, enqueue,
     get_card, start_timer, utc_value,
 )
 
@@ -45,23 +45,9 @@ def move_to_final(connection: Connection, control, now: datetime) -> None:
     settings = get_enterprise(connection, control["enterprise_id"])["settings"]
     if control["status"] != "branch" or not target or target["chat"] not in settings["chats"]:
         return
-    revision = _change_status(connection, control, "final", "transfer_final", now, assignment=target)
+    revision = advance_system_card(connection, control, "final", "transfer_final", now, assignment=target)
     enqueue(connection, control["id"], "control:final", target["chat"],
             {"kind": "refund_control", "card_revision": revision}, now)
-
-
-def _change_status(connection: Connection, control, status: str,
-                   action: str, now: datetime, **fields) -> int:
-    revision = control["revision"] + 1
-    connection.execute(update(cards).where(cards.c.id == control["id"]).values(
-        revision=revision, status=status, **fields,
-    ))
-    connection.execute(actions.insert().values(
-        card_id=control["id"], command_id=f"{action}:{revision}", revision=revision,
-        action=action, actor={"source": "workflow"}, input={}, previous_status=control["status"],
-        status=status, recorded_at=utc_value(now),
-    ))
-    return revision
 
 
 def finish_control(connection: Connection, refund_id: str, now: datetime) -> None:
@@ -69,7 +55,7 @@ def finish_control(connection: Connection, refund_id: str, now: datetime) -> Non
         cards.c.parent_id == refund_id, cards.c.kind == "refund_control",
     ).with_for_update()).mappings().one_or_none()
     if control is not None and control["status"] != "closed":
-        _change_status(connection, control, "closed", "refund_resolved", now)
+        advance_system_card(connection, control, "closed", "refund_resolved", now)
 
 
 def take_control(connection: Connection, card_id: str, command_id: str, revision: int,

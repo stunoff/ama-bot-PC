@@ -132,6 +132,20 @@ def create_card(
     ).with_for_update()).mappings().one()
 
 
+def advance_system_card(connection: Connection, control, status: str,
+                   action: str, now: datetime, **fields) -> int:
+    revision = control["revision"] + 1
+    connection.execute(update(cards).where(cards.c.id == control["id"]).values(
+        revision=revision, status=status, **fields,
+    ))
+    connection.execute(insert(actions).values(
+        card_id=control["id"], command_id=f"{action}:{revision}", revision=revision,
+        action=action, actor={"source": "workflow"}, input={}, previous_status=control["status"],
+        status=status, recorded_at=utc_value(now),
+    ))
+    return revision
+
+
 def apply_action(
     connection: Connection, card_id: str, command_id: str, expected_revision: int,
     transition: Transition, actor: Actor, chat_key: str, role: str, now: datetime,

@@ -9,6 +9,15 @@ DEFAULTS = {
     "refund.control.branch": (10, 20, 40),
     "refund.control.final": (10, 20),
     "task.review": (30, 45, 60),
+    "control.branch": (10, 20),
+    "control.partner": (10,),
+    "control.general": (10,),
+    "control.technical.normal": (30, 60),
+    "control.technical.high": (15, 30),
+    "control.technical.critical": (10, 20),
+    "control.executive.normal": (60, 120),
+    "control.executive.high": (30, 60),
+    "control.executive.critical": (15, 30),
     "technical.review": (30, 45),
 }
 

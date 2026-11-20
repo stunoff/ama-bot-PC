@@ -8,6 +8,7 @@ from sqlalchemy.engine import Connection
 from ama_rs.enterprises import chat_is_open, get_enterprise
 from ama_rs.processes import cards, deliveries, elapse_timer, enqueue, get_card, start_timer, timers, utc_value
 from ama_rs.refund_control import REFUND_DONE, move_to_final, open_control
+from ama_rs.request_control import advance_request_control, open_request_control
 from ama_rs.timing import effective
 
 TERMINAL = {"closed", "accepted", "executed", "not_required"}
@@ -17,13 +18,9 @@ TIMER_RANK = {
     "refund_reminder_1": 1, "refund_reminder_2": 2, "refund_reminder_3": 3,
     "financial_deadline": 4, "refund_followup": 5,
     "review_reminder": 1, "review_overdue": 2, "review_escalation": 3,
+    "request_control_reminder": 1, "request_control_advance": 2,
     "control_reminder_1": 1, "control_reminder_2": 2, "control_final": 3,
 }
-
-
-def _unique_route(settings: dict, kind: str) -> str | None:
-    matches = [key for key, chat in settings["chats"].items() if chat["kind"] == kind]
-    return matches[0] if len(matches) == 1 else None
 
 
 def _work_deadlines(settings: dict, target: str, start: datetime, limits: tuple[int, ...]):
@@ -81,16 +78,29 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
         for key, deadline in zip(keys, _work_deadlines(settings, chat, delivered_at, limits)):
             start_timer(connection, card["id"], key, delivered_at, deadline - delivered_at,
                         delivery_id=record["id"])
+    elif card["kind"] == "request_control" and payload.get("kind") == "request_control":
+        if payload.get("card_revision") != card["revision"] or card["status"] != "waiting":
+            return
+        index = card["data"]["index"]
+        route = card["data"]["route"]
+        stage = route[index]["stage"]
+        profile = f"control.{stage}"
+        if stage in {"technical", "executive"}:
+            profile += f".{card['data']['priority']}"
+        limits = effective(settings, profile)
+        if index == len(route) - 1:
+            limits = limits[:1]
+        for key, deadline in zip(
+            ("request_control_reminder", "request_control_advance"),
+            _work_deadlines(settings, chat, delivered_at, limits),
+        ):
+            start_timer(connection, card["id"], key, delivered_at, deadline - delivered_at,
+                        delivery_id=record["id"])
 
 
 def _target(card, key: str, settings: dict) -> str | None:
     if key == "acceptance" and card["kind"] == "technical" and not card["data"].get("night"):
         return None
-    if key == "breach" and card["kind"] == "technical" and not card["data"].get("night"):
-        return _unique_route(settings, "technical_management") or card["assignment"]["chat"]
-    if key in {"execution_escalation", "review_escalation"} and card["kind"] == "task":
-        role = card["data"]["reviewer"]["role"]
-        return _unique_route(settings, "branch" if role == "manager" else settings["final_route"])
     if card["kind"] == "refund":
         return card["data"]["worker"]["chat"]
     return card["assignment"]["chat"]
@@ -115,12 +125,24 @@ def queue_due_reminders(connection: Connection, now: datetime) -> None:
         for key in sorted(keys, key=lambda item: TIMER_RANK.get(item, 0), reverse=True):
             if not elapse_timer(connection, card_id, key, now):
                 continue
+            if key == "request_control_advance":
+                advance_request_control(connection, card, now)
+                break
+            if ((card["kind"] == "technical" and key == "breach")
+                    or (card["kind"] == "task" and key in {"execution_escalation", "review_escalation"})):
+                open_request_control(connection, card, now)
+                if card["kind"] != "technical" or not card["data"].get("night"):
+                    continue
             if key == "control_final":
                 move_to_final(connection, card, now)
                 break
             if key == "refund_followup":
                 open_control(connection, card, now)
                 continue
+            if key == "request_owner_due" and card["data"]["index"] + 1 < len(card["data"]["route"]):
+                due = datetime.fromisoformat(card["data"]["next_due"])
+                for followup in _work_deadlines(settings, card["assignment"]["chat"], due, (10,)):
+                    start_timer(connection, card_id, "request_control_advance", due, followup - due)
             target = _target(card, key, settings)
             payload = {"kind": "reminder", "timer": key, "card_revision": card["revision"]}
             if key == "financial_deadline":

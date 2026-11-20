@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-for check in enterprise process shifts requests personnel operations contact refunds webhooks reports wiring menu sla scheduler; do
+for check in enterprise process shifts requests personnel operations contact refunds webhooks reports wiring menu sla scheduler request_control; do
     printf '%s\n' "Running $check"
     docker compose "$@" exec -T app python - < "scripts/smoke/$check.py"
 done

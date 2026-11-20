@@ -10,6 +10,7 @@ from ama_rs.processes import (
     ProcessConflict, ProcessPermissionError, Transition, apply_action,
     create_card, enqueue, get_card, start_timer, utc_value,
 )
+from ama_rs.request_control import finish_request_control
 from ama_rs.shifts import route
 from ama_rs.timing import effective
 
@@ -212,7 +213,9 @@ def review_result(connection: Connection, card_id: str, command_id: str, revisio
                    frozenset({reviewer["role"]})),
         actor, reviewer["chat"], reviewer["role"], now,
         updates={"accepted": accepted, "review_note": note}, assignment=None if accepted else worker)
-    if not accepted:
+    if accepted:
+        finish_request_control(connection, card_id, now)
+    else:
         enqueue(connection, card_id, f"returned:{new_revision}", worker["chat"],
                 {"kind": "card", "card_revision": new_revision}, now)
     return new_revision

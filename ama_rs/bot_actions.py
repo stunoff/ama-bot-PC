@@ -10,6 +10,7 @@ from ama_rs import contact_center, operations, personnel, refunds, requests, shi
 from ama_rs.enterprises import Actor
 from ama_rs.processes import ProcessConflict
 from ama_rs.refund_control import take_control
+from ama_rs.request_control import accept_request_control
 
 ACTIONS = {
     "cash.document": shifts.add_cash_document,
@@ -24,6 +25,7 @@ ACTIONS = {
     "request.take": requests.take_request,
     "request.result": requests.submit_result,
     "request.review": requests.review_result,
+    "request.control": accept_request_control,
     "technical.create": requests.open_technical_request,
     "person.confirm": personnel.confirm_link,
     "person.training": personnel.acknowledge_training,
