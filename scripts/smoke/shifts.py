@@ -2,6 +2,8 @@ from datetime import UTC, date, datetime
 from sqlalchemy import select
 from ama_rs.db import create_database_engine
 from ama_rs.enterprises import Actor, save_enterprise
+from ama_rs.integrations import run_bot_command
+from ama_rs.messengers import Message
 from ama_rs.processes import ProcessConflict, attachments, cards, claim_delivery, deliveries, finish_delivery, get_card
 from ama_rs.shifts import (
     accept_cash, accept_checklist, add_cash_document, add_checklist_photo,
@@ -30,6 +32,11 @@ with create_database_engine().begin() as conn:
     save_enterprise(conn, settings, 0, "test")
     morning = begin_checklist(conn, settings["id"], "morning", "shift-id", now)
     assert morning["id"] == begin_checklist(conn, settings["id"], "morning", "shift-id", now)["id"]
+    task_menu = run_bot_command(conn, Message("shift-ui-1", employee, "/tasks"), now)
+    card_button = next(key for label, key in task_menu.buttons if label.startswith("Открыть чек-лист"))
+    display = run_bot_command(conn, Message("shift-ui-2", employee, card_button, callback_id="cb"), now)
+    assert "Интернет" in display.text and "speed" in display.text
+    stale = dict(display.buttons)["Выполнено"]
     base_id = conn.scalar(select(deliveries.c.id).where(
         deliveries.c.card_id == morning["id"], deliveries.c.signal == "management-card"))
     base = claim_delivery(conn, base_id, now)
@@ -46,6 +53,8 @@ with create_database_engine().begin() as conn:
             edit = conn.scalar(select(deliveries.c.payload).where(
                 deliveries.c.card_id == morning["id"], deliveries.c.signal == "management-edit:2"))
             assert edit["edit"] == "99"
+            result = run_bot_command(conn, Message("shift-ui-3", employee, stale, callback_id="cb"), now)
+            assert "недоступно" in result
             continue
         for slot in step["photos"]:
             add_checklist_photo(conn, morning["id"], f"m-photo:{idx}:{slot}", key, slot, "file", employee, now)

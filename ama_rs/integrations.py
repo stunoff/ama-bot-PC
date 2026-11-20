@@ -15,10 +15,10 @@ from ama_rs.bot_actions import workflow_action
 from ama_rs import chat_admin
 from ama_rs.chat_menu import Screen, consume, menu, screen
 from ama_rs.contact_center import take_operation
-from ama_rs.enterprises import Actor, enterprises, has_role
+from ama_rs.enterprises import Actor, enterprises, get_enterprise, has_role
 from ama_rs.messengers import Message
 from ama_rs.personnel import claim_invite, people, record_work_time, synchronize_person
-from ama_rs.processes import ProcessConflict, ProcessPermissionError, cards, create_card, enqueue, utc_value
+from ama_rs.processes import ProcessConflict, ProcessPermissionError, cards, create_card, enqueue, get_card, utc_value
 from ama_rs.refunds import take_refund
 from ama_rs.reports import accessible_summaries, format_summary, import_coverage, import_order
 from ama_rs.requests import report_problem, submit_result, take_request
@@ -64,7 +64,7 @@ def _scope(settings: dict, actor: Actor, now: datetime) -> list[str]:
 
 COMMANDS = {
     "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result",
-    "/step", "/photo", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help",
+    "/step", "/photo", "/checklist", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help",
 }
 
 
@@ -97,6 +97,38 @@ def run_bot_command(connection: Connection, message: Message, now: datetime) -> 
         return "Действие недоступно. Проверьте команду, права и версию карточки."
 
 
+def _checklist_screen(connection: Connection, card_id: str, actor: Actor, now: datetime) -> Screen:
+    card = get_card(connection, card_id)
+    if card["kind"] not in {"morning_checklist", "evening_checklist"} or card["status"] != "filling":
+        raise ProcessConflict("Checklist is not active")
+    target = card["assignment"]
+    settings = get_enterprise(connection, card["enterprise_id"])["settings"]
+    if target.get("user") not in (None, actor.user_id) or not has_role(
+        settings, actor, target["chat"], "service_account", now
+    ):
+        raise ProcessPermissionError("Checklist belongs to another recipient")
+    data = card["data"]
+    step = data["steps"][data["current"]]
+    key = step["key"]
+    prefix = f"/step {card_id} {card['revision']} {key} "
+    text = f"{data['current'] + 1}/{len(data['steps'])} · {step['title']}"
+    labels = {"continue": "Продолжить", "opening": "Открылись и принимаем заказы",
+              "finish": "Завершить чек-лист"}
+    links = [(labels.get(key, "Выполнено"), {"text": prefix + ("opened" if key == "opening" else "ok")})]
+    if step["photos"]:
+        text += "\nПодписи к фото по порядку:\n" + "\n".join(
+            f"/photo {card_id} {key} {slot}" for slot in step["photos"])
+    if key == "opening":
+        text += ("\nЕсли открытие задерживается, передайте причину и ожидаемое время:\n"
+                 + prefix + 'delayed {"reason":"…","expected_at":"…"}')
+    elif key not in {"continue", "finish"}:
+        links.append(("Есть проблема", {"text": f"/checklist_problem_help {card_id}"}))
+    if step["optional"]:
+        links.append(("У нас этого нет", {"text": prefix + "absent"}))
+    links.append(("Мои задачи", {"text": "/tasks"}))
+    return screen(connection, actor, now, text, links)
+
+
 def _dispatch(connection: Connection, command: str, arguments: str, command_id: str,
               actor: Actor, now: datetime, file_id: str | None) -> str | Screen:
     if command in {"/settings", "/timers"}:
@@ -117,6 +149,22 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
         start, end = (date.fromisoformat(value) for value in arguments.split())
         reports = accessible_summaries(connection, actor, now, start, end)
         return "\n\n".join(map(format_summary, reports))[:3800]
+    if command == "/checklist":
+        return _checklist_screen(connection, arguments.strip(), actor, now)
+    if command == "/checklist_problem_help":
+        card_id = arguments.strip()
+        card = get_card(connection, card_id)
+        settings = get_enterprise(connection, card["enterprise_id"])["settings"]
+        if card["kind"] not in {"morning_checklist", "evening_checklist"} or card["status"] != "filling":
+            raise ProcessConflict("Checklist is not active")
+        if not has_role(settings, actor, card["assignment"]["chat"], "service_account", now):
+            raise ProcessPermissionError("Checklist belongs to another recipient")
+        step = card["data"]["steps"][card["data"]["current"]]["key"]
+        draft = json.dumps({"card_id": card_id, "step_key": step, "description": "…"}, ensure_ascii=False)
+        return (f"Сначала опишите проблему:\n/workflow checklist.problem {draft}\n"
+                f"Если нужно фото, добавьте подпись /photo {card_id} {step} problem\n"
+                f"Затем завершите пункт:\n/step {card_id} {card['revision']} {step} problem " +
+                '{"description":"…"}')
     if command == "/tasks":
         lines = []
         links = []
@@ -142,6 +190,9 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
                         identifier = f"{row['id']} {row['revision']}"
                         if row["status"] == "review" and row["kind"] in {"cash_shift", "morning_checklist", "evening_checklist"}:
                             links.append((f"Принять · {row['id'][:8]}", {"text": f"/accept {identifier}"}))
+                        if row["status"] == "filling" and row["kind"] in {"morning_checklist", "evening_checklist"}:
+                            links.append((f"Открыть чек-лист · {row['id'][:8]}",
+                                          {"text": f"/checklist {row['id']}"}))
                         if row["status"] == "open" and row["kind"] in {"task", "refund", "technical"}:
                             if target["role"] != "vipart_specialist":
                                 links.append((f"Взять · {row['id'][:8]}", {"text": f"/take {identifier}"}))
@@ -164,6 +215,8 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
             fields = json.loads(details[0]) if details else None
             revision = complete_step(connection, card_id, command_id, int(raw_revision), step,
                                      outcome, actor, now, details=fields)
+            if get_card(connection, card_id)["status"] == "filling":
+                return _checklist_screen(connection, card_id, actor, now)
         else:
             revision = submit_result(connection, card_id, command_id, int(raw_revision), actor, value, now)
         return f"Карточка обновлена. Версия {revision}."
