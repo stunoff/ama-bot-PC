@@ -9,6 +9,7 @@ from sqlalchemy.engine import Connection
 
 from ama_rs.enterprises import Actor, enterprises, has_role
 from ama_rs.processes import ProcessPermissionError, actions, cards
+from ama_rs.refunds import confirmed_amount
 from ama_rs.reports import _period
 
 REPORT_ROLES = {"finance_executor", "branch_lead", "operations_director", "general_director"}
@@ -71,7 +72,7 @@ def refund_report(connection: Connection, actor: Actor, now: datetime, begin: da
             data = row["data"]
             reference = (data.get("payment_reference"), data.get("financial_reference"))
             key = reference if all(reference) else row["id"]
-            confirmations.setdefault(key, set()).add(data["requested_kopecks"])
+            confirmations.setdefault(key, set()).add(confirmed_amount(data))
         executed = sum(next(iter(values)) for values in confirmations.values() if len(values) == 1)
         conflicts = sum(len(values) > 1 for values in confirmations.values())
         partial = sum(bool(row["data"].get("positions")) for row in records)

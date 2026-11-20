@@ -42,7 +42,7 @@ with create_database_engine().begin() as conn:
         assert take_refund(conn, card_id, "take", 1, executor, later) == 2
         assert reserve_refund(conn, card_id, "reserve", 2, "payment-1", 10000, 0, executor, later) == 3
         assert record_refund_result(conn, card_id, "done", 3, "executed", "trace", executor,
-                                    now + timedelta(minutes=20)) == 4
+                                    now + timedelta(minutes=20), executed_amount=900) == 4
     request_refund(conn, enterprise_id, "third", "Two", "Order", "Reason", 300, employee, now)
 
     def show(event, actor, filters=""):
@@ -51,7 +51,7 @@ with create_database_engine().begin() as conn:
 
     full = show("all", executor)
     assert "Запросов: 3. Полных: 1. Частичных: 2." in full
-    assert "Запрошено: 27.00 ₽. Исполнено: 12.00 ₽." in full
+    assert "Запрошено: 27.00 ₽. Исполнено: 9.00 ₽." in full
     assert "до принятия: 5 мин. До исполнения: 20 мин." in full
     selected = show("brand", branch, '{"brand":"Two"}')
     assert "Запросов: 1" in selected and "Исполнено: 0.00 ₽" in selected

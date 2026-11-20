@@ -33,6 +33,16 @@ with create_database_engine().begin() as conn:
         pass
     else:
         raise AssertionError("Payment balance exceeded while first refund was uncertain")
-    assert record_refund_result(conn, first["id"], "executed", 4, "executed", "provider-1", finance, now) == 5
+    try:
+        record_refund_result(conn, first["id"], "too-much", 4, "executed", "provider-1",
+                             finance, now, executed_amount=7001)
+    except ProcessConflict:
+        pass
+    else:
+        raise AssertionError("An amount above the reservation was accepted")
+    for _ in range(2):
+        assert record_refund_result(conn, first["id"], "executed", 4, "executed", "provider-1",
+                                    finance, now, executed_amount=5500) == 5
+    assert reserve_refund(conn, second["id"], "reserve", 2, "payment-1", 10000, 0, finance, now) == 3
     conn.rollback()
-print("Financial assignment, partial balance, and uncertain execution controls verified")
+print("Financial assignment, partial balance, actual settlement, and uncertain execution controls verified")

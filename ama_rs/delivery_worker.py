@@ -14,6 +14,7 @@ from ama_rs.db import create_database_engine
 from ama_rs.messengers import definitely_rejected, edit_message, send_message
 from ama_rs.processes import attachments, claim_delivery, deliveries, finish_delivery, get_card, utc_value
 from ama_rs.operator_shift import outstanding
+from ama_rs.refunds import confirmed_amount
 from ama_rs.reminders import after_delivery, queue_due_reminders
 from ama_rs.reports import format_summary, schedule_reports, summary
 from ama_rs.shift_scheduler import schedule_checklists
@@ -102,12 +103,17 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
         problems = sum(item["outcome"] == "problem" for item in data["results"].values())
         return f"{status}\n{progress}\nПроблемы: {problems}", None
     if payload.get("kind") == "refund_guest":
-        outcome = "Возврат подтверждён платёжным сервисом" if data["outcome"] == "executed" else "Возврат не требуется"
+        outcome = "Возврат не требуется"
+        if data["outcome"] == "executed":
+            source = get_card(connection, card["parent_id"])
+            outcome = f"Платёжный сервис подтвердил возврат {confirmed_amount(source['data']) / 100:.2f} ₽"
         return (f"Сообщите гостю результат · {outcome}\n"
                 f"Онлайн-возврат: {card['parent_id']}\n{status}"), None
     if payload.get("kind") in {"financial_status", "financial_result"}:
         source = f"\nИсходное обращение: {payload['source_card']}" if payload.get("source_card") else ""
-        return f"{status}\nСумма: {data.get('requested_kopecks', 0) / 100:.2f} ₽{source}", None
+        amount = (confirmed_amount(data) if card["status"] == "executed"
+                  else data.get("requested_kopecks", 0))
+        return f"{status}\nСумма: {amount / 100:.2f} ₽{source}", None
     detail = data.get("title") or data.get("description") or payload.get("question") or payload.get("answer")
     if card["kind"] == "technical" and record["chat"]["kind"] in {"technical", "vipart"}:
         detail = f"{detail}\nСервер: {data['server_address']}\nЛМ: {data['lm_address']}"

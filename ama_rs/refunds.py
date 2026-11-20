@@ -81,6 +81,18 @@ def take_refund(connection: Connection, card_id: str, command_id: str, revision:
         actor, worker["chat"], "finance_executor", now, updates={"worker": worker}, assignment=worker)
 
 
+def confirmed_amount(data: dict) -> int:
+    """Earlier records confirmed the full reserved amount."""
+    return data.get("executed_kopecks", data["requested_kopecks"])
+
+
+def _lock_payment_ledger(connection: Connection, card_id: str):
+    source = _refund(connection, card_id, lock=False)
+    connection.execute(select(enterprises.c.id).where(
+        enterprises.c.id == source["enterprise_id"]).with_for_update()).scalar_one()
+    return _refund(connection, card_id)
+
+
 def reserve_refund(
     connection: Connection, card_id: str, command_id: str, revision: int,
     payment_reference: str, paid_kopecks: int, prior_external_refunds_kopecks: int,
@@ -96,16 +108,14 @@ def reserve_refund(
     payment_reference = payment_reference.strip()
     if not payment_reference or len(payment_reference) > 128:
         raise ValueError("A verified payment reference is mandatory")
-    unlocked = _refund(connection, card_id, lock=False)
-    connection.execute(select(enterprises.c.id).where(
-        enterprises.c.id == unlocked["enterprise_id"]).with_for_update()).scalar_one()
-    card = _refund(connection, card_id)
-    active = connection.execute(select(cards.c.data).where(
+    card = _lock_payment_ledger(connection, card_id)
+    active = connection.execute(select(cards.c.status, cards.c.data).where(
         cards.c.enterprise_id == card["enterprise_id"], cards.c.kind == "refund",
         cards.c.id != card_id, cards.c.status.in_(("reserved", "uncertain", "executed")),
-    ).with_for_update()).scalars()
-    reused = sum(item["requested_kopecks"] for item in active
-                 if item.get("payment_reference") == payment_reference)
+    ).with_for_update()).mappings()
+    reused = sum(confirmed_amount(item["data"]) if item["status"] == "executed"
+                 else item["data"]["requested_kopecks"] for item in active
+                 if item["data"].get("payment_reference") == payment_reference)
     if reused + prior_external_refunds_kopecks + card["data"]["requested_kopecks"] > paid_kopecks:
         raise ProcessConflict("The available payment balance does not cover this request")
     worker = card["data"]["worker"]
@@ -117,17 +127,30 @@ def reserve_refund(
 
 
 def record_refund_result(connection: Connection, card_id: str, command_id: str, revision: int,
-                         outcome: str, reference: str, actor: Actor, now: datetime) -> int:
+                         outcome: str, reference: str, actor: Actor, now: datetime, *,
+                         executed_amount: int | None = None) -> int:
     if outcome not in {"executed", "not_required", "uncertain"} or not reference.strip():
         raise ValueError("Provide a documented financial outcome")
-    card = _refund(connection, card_id)
+    card = _lock_payment_ledger(connection, card_id)
+    changes = {"financial_reference": reference}
+    if outcome == "executed":
+        requested = card["data"]["requested_kopecks"]
+        amount = requested if executed_amount is None else executed_amount
+        _amount(amount)
+        if amount > requested:
+            raise ProcessConflict("The confirmed amount exceeds the reservation")
+        # Preserve compatibility when replaying an earlier full-reservation confirmation.
+        if executed_amount is not None:
+            changes["executed_kopecks"] = amount
+    elif executed_amount is not None:
+        raise ValueError("Report an executed amount only for a confirmed payment")
     worker = card["data"]["worker"]
     allowed = {"reserved", "uncertain"} if outcome == "executed" else {"checking", "reserved", "uncertain"}
     if outcome == "uncertain":
         allowed = {"reserved"}
     new_revision = apply_action(connection, card_id, command_id, revision,
         Transition("record_refund_result", frozenset(allowed), outcome, frozenset({"finance_executor"})),
-        actor, worker["chat"], "finance_executor", now, updates={"financial_reference": reference})
+        actor, worker["chat"], "finance_executor", now, updates=changes)
     if outcome != "uncertain":
         finish_control(connection, card_id, now)
         publish_result(connection, card, outcome, now)
