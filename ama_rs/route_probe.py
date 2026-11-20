@@ -104,7 +104,7 @@ def confirm_probe(connection: Connection, card_id: str, command_id: str, actor: 
     return apply_action(connection, card_id, command_id, card["revision"],
         Transition("confirm_route", frozenset({"open"}), "accepted", frozenset(roles), assignee_only=False),
         actor, key, role, now, updates={"confirmed_at": now.isoformat(), "confirmed_by": actor.user_id,
-                                        "confirmed_role": role, "confirmed_photo": bool(file_id)})
+                                        "confirmed_role": role, "confirmed_roles": sorted(roles), "confirmed_photo": bool(file_id)})
 
 
 def route_tests(connection: Connection, entry: dict, now: datetime) -> list[tuple[str, str]]:
@@ -135,3 +135,20 @@ def route_tests(connection: Connection, entry: dict, now: datetime) -> list[tupl
                 "superseded": "отправка отменена",
             }[row["delivery_state"]]
     return [(key, results.get(key, "проверка не запускалась")) for key in sorted(settings["chats"])]
+
+
+def confirmed_routes(connection: Connection, enterprise_id: str, settings: dict,
+                     now: datetime) -> set[tuple[str, str]]:
+    records = connection.execute(select(cards.c.data).where(
+        cards.c.enterprise_id == enterprise_id, cards.c.kind == "route_probe", cards.c.status == "accepted",
+    )).scalars()
+    verified = set()
+    for data in records:
+        key = data["chat"]
+        chat = settings["chats"].get(key)
+        if chat and identity(chat) == data["identity"]:
+            actor = Actor(chat["platform"], data["confirmed_by"], chat["id"], chat.get("topic_id"))
+            for role in data.get("confirmed_roles", [data["confirmed_role"]]):
+                if has_role(settings, actor, key, role, now):
+                    verified.add((key, role))
+    return verified

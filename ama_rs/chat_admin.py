@@ -9,6 +9,7 @@ from sqlalchemy.engine import Connection
 from ama_rs.admin_permissions import ADMIN_ROLES
 from ama_rs.chat_menu import admin_scope, configuration_fields, screen
 from ama_rs.enterprises import Actor, has_role, save_enterprise, validate_settings
+from ama_rs.checklist_setup import REQUIRED, route_issues, schedule_issues
 from ama_rs.route_probe import route_tests
 from ama_rs.readiness import readiness_report
 from ama_rs.processes import ProcessPermissionError
@@ -63,6 +64,7 @@ def settings_screen(connection: Connection, actor: Actor, now: datetime, enterpr
         links = [("Как изменить", {"text": f"/settings_help {enterprise_id}"}),
                  ("Назад", {"text": "/settings"})]
         if "admin_access" in fields:
+            links.insert(0, ("Мастер чек-листов", {"text": f"/checklist_setup {enterprise_id}"}))
             links.insert(0, ("Готовность к запуску", {"text": f"/readiness {enterprise_id}"}))
         return screen(connection, actor, now, _summary(entry, fields), links)
     allowed = admin_scope(connection, actor, now)
@@ -82,6 +84,45 @@ def readiness_screen(connection: Connection, actor: Actor, now: datetime, enterp
     return screen(connection, actor, now, readiness_report(connection, entry, now),
                   [("Проверить маршруты", {"text": f"/route_tests {enterprise_id}"}),
                    ("Назад", {"text": f"/settings {enterprise_id}"})])
+
+
+def checklist_setup_screen(connection: Connection, actor: Actor, now: datetime, enterprise_id: str):
+    entry = _entry(connection, actor, now, enterprise_id)
+    if "admin_access" not in configuration_fields(entry["settings"], actor, now):
+        raise ProcessPermissionError("Only a full administrator can run checklist setup")
+    settings = entry["settings"]
+    schedule = schedule_issues(settings, now)
+    routes = route_issues(connection, enterprise_id, settings, now)
+    lines = [f"Мастер чек-листов · {enterprise_id}", f"1. Расписание — {'требует настройки' if schedule else 'проверено'}"]
+    lines.extend(schedule)
+    if schedule:
+        lines.append(f'/configure {enterprise_id} shift_schedule {{"service_starts_at":"09:00",'
+                     '"service_ends_at":"21:00","preparation_minutes":10,"closing_minutes":20}')
+    lines.append(f"2. Маршруты и роли — {'требуют проверки' if routes else 'проверены'}")
+    lines.extend(routes)
+    missing = [kind for kind in REQUIRED if not any(
+        chat["kind"] == kind for chat in settings["chats"].values()
+    )]
+    if missing:
+        example = json.dumps({"kind": missing[0], "platform": "telegram", "id": "ID_ЧАТА",
+                              "user": "ID_ПОЛЬЗОВАТЕЛЯ"}, ensure_ascii=False)
+        lines.append(f"/configure {enterprise_id} checklist_route {example}")
+        lines.append("После добавления настройте рабочий календарь через chat_calendar.")
+    lines.append(f"3. Автозапуск — {'включён' if settings.get('scheduled_checklists') else 'выключен'}")
+    links = [("Проверить маршруты", {"text": f"/route_tests {enterprise_id}"})]
+    if not schedule and not routes:
+        links.append(("Подготовить включение", {"text": f"/configure {enterprise_id} scheduled_checklists true"}))
+    links.append(("Настройки", {"text": f"/settings {enterprise_id}"}))
+    return screen(connection, actor, now, "\n".join(lines), links)
+
+
+def _check_activation(connection, entry, candidate, field, now):
+    if field != "scheduled_checklists" or not candidate.get("scheduled_checklists"):
+        return
+    issues = schedule_issues(candidate, now) + route_issues(connection, entry["id"], candidate, now)
+    if issues:
+        raise ProcessPermissionError("The automatic checklist prerequisites are incomplete")
+    candidate["verified_checklist_activation"] = True
 
 
 def route_tests_screen(connection: Connection, actor: Actor, now: datetime, enterprise_id: str, page: int):
@@ -112,8 +153,11 @@ def preview(connection: Connection, actor: Actor, now: datetime, arguments: str)
     if field not in configuration_fields(entry["settings"], actor, now):
         raise ProcessPermissionError("Field is outside this administrator's scope")
     value = json.loads(raw)
-    _change(entry["settings"], field, value, now)
+    revised = _change(entry["settings"], field, value, now)
+    _check_activation(connection, entry, revised, field, now)
     previous = entry["settings"].get(field)
+    if field == "checklist_route":
+        previous = None
     if field == "admin_access":
         previous = _matching_grants(entry["settings"], value)
     if field == "chat_calendar":
@@ -161,10 +205,35 @@ def _change_access(settings: dict, rule: dict, now: datetime) -> None:
     raise ProcessPermissionError("At least one permanent active administrator is required")
 
 
+def _add_checklist_route(settings: dict, value: dict) -> None:
+    required = {"kind", "platform", "id", "user"}
+    if not required <= value.keys() <= required | {"topic_id"}:
+        raise ValueError("Specify the route, platform, chat ID and user ID")
+    kind, platform = value["kind"], value["platform"]
+    if kind not in REQUIRED or platform not in {"telegram", "max"}:
+        raise ValueError("Expected a checklist route and a supported platform")
+    if kind in settings["chats"] or any(chat["kind"] == kind for chat in settings["chats"].values()):
+        raise ValueError("A route of this kind already exists")
+    for field in ("id", "user", "topic_id"):
+        if field not in value:
+            continue
+        key = value[field]
+        if (type(key) is not str or not key.isascii() or not key.removeprefix("-").isdecimal()
+                or len(key) > 21 or (field != "id" and key.startswith("-"))):
+            raise ValueError(f"Invalid messenger identifier for {field}")
+    if "topic_id" in value and platform != "telegram":
+        raise ValueError("Only Telegram routes take a forum topic")
+    chat = {"kind": kind, "platform": platform, "id": value["id"]}
+    if "topic_id" in value:
+        chat["topic_id"] = value["topic_id"]
+    settings["chats"][kind] = chat
+    settings["grants"].append({"chat": kind, "role": REQUIRED[kind], "user": value["user"]})
+
+
 def _change(settings: dict, field: str, value, now: datetime) -> dict:
     expected = {"scheduled_reports": bool, "scheduled_checklists": bool, "attendance_monitoring": bool,
                 "facilities": list, "writeoff_reasons": list, "shift_schedule": dict, "timing_overrides": dict,
-                "chat_calendar": dict, "admin_access": dict}.get(field, str)
+                "chat_calendar": dict, "admin_access": dict, "checklist_route": dict}.get(field, str)
     if type(value) is not expected:
         raise ValueError("Invalid setting value")
     if field == "facilities" and (any(type(item) is not str for item in value)
@@ -185,6 +254,8 @@ def _change(settings: dict, field: str, value, now: datetime) -> dict:
         ):
             raise ValueError("Unexpected calendar fields")
         result["chats"][value["chat"]]["calendar"] = calendar
+    elif field == "checklist_route":
+        _add_checklist_route(result, value)
     elif field == "admin_access":
         _change_access(result, value, now)
     else:
@@ -204,5 +275,6 @@ def save(connection: Connection, actor: Actor, now: datetime, command: dict) -> 
     if field not in configuration_fields(entry["settings"], actor, now):
         raise ProcessPermissionError("Field is outside this administrator's scope")
     revised = _change(entry["settings"], field, command["value"], now)
+    _check_activation(connection, entry, revised, field, now)
     revision = save_enterprise(connection, revised, command["revision"], f"{actor.platform}:{actor.user_id}")
     return f"Настройки сохранены. Версия {revision}."

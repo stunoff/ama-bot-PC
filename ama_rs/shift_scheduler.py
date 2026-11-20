@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
+from ama_rs.checklist_setup import route_issues
 from ama_rs.enterprises import Actor, chat_is_open, enterprises, has_role
 from ama_rs.processes import ProcessConflict, cards
 from ama_rs.shifts import begin_checklist, checklist_schedule, route
@@ -16,6 +17,8 @@ def schedule_checklists(connection: Connection, now: datetime) -> None:
     for entry in entries:
         settings = entry["settings"]
         if not settings.get("scheduled_checklists") or not settings.get("shift_schedule"):
+            continue
+        if settings.get("verified_checklist_activation") and route_issues(connection, entry["id"], settings, now):
             continue
         local = now.astimezone(ZoneInfo(settings["timezone"]))
         for offset in (-1, 0, 1):

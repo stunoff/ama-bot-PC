@@ -50,7 +50,7 @@ def consume(connection: Connection, actor: Actor, now: datetime, key: str) -> di
 
 def configuration_fields(settings: dict, actor: Actor, now: datetime) -> frozenset[str]:
     if any(has_role(settings, actor, key, "system_admin", now) for key in settings["chats"]):
-        return EDITABLE | {"admin_access"}
+        return EDITABLE | {"admin_access", "checklist_route"}
     return frozenset(
         field for grant in settings["grants"]
         if grant["role"] == "delegated_admin" and grant["user"] == actor.user_id
