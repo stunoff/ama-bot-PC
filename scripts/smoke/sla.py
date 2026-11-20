@@ -4,14 +4,16 @@ from sqlalchemy import select
 
 from ama_rs.db import create_database_engine
 from ama_rs.enterprises import Actor, save_enterprise
-from ama_rs.processes import claim_delivery, deliveries, finish_delivery, timers
-from ama_rs.refunds import ask_refund_question, request_refund, take_refund
+from ama_rs.processes import cards, claim_delivery, deliveries, finish_delivery, get_card, timers
+from ama_rs.refund_control import take_control
+from ama_rs.refunds import (answer_refund_question, ask_refund_question, record_refund_result,
+                            request_refund, take_refund)
 from ama_rs.reminders import after_delivery, queue_due_reminders
 from ama_rs.requests import make_task, submit_result, take_request
 
 now = datetime(2026, 11, 23, 10, tzinfo=UTC)
-kinds = ("enterprise", "management", "refunds", "branch")
-roles = ("service_account", "manager", "finance_executor", "branch_lead")
+kinds = ("enterprise", "management", "refunds", "branch", "headquarters")
+roles = ("service_account", "manager", "finance_executor", "branch_lead", "operations_director")
 settings = {
     "id": "sla-test", "iiko_id": "sla-test", "name": "Demo", "timezone": "Europe/Moscow",
     "format": "delivery", "server_address": "server.invalid", "lm_address": "lm.invalid",
@@ -47,12 +49,32 @@ with create_database_engine().begin() as conn:
     claimed = claim_delivery(conn, financial["id"], late)
     assert finish_delivery(conn, financial["id"], claimed["attempt_id"], external_id="msg1")
     after_delivery(conn, claimed, late)
+    after_finance = late + timedelta(minutes=10)
+    linked = select(cards.c.id).where(cards.c.parent_id == refund_id, cards.c.kind == "refund_control")
     queue_due_reminders(conn, late + timedelta(minutes=9))
-    assert conn.scalar(select(deliveries.c.id).where(deliveries.c.card_id == refund_id,
-                       deliveries.c.chat_key == "branch")) is None
-    queue_due_reminders(conn, late + timedelta(minutes=10))
-    assert conn.scalar(select(deliveries.c.id).where(deliveries.c.card_id == refund_id,
-                       deliveries.c.chat_key == "branch"))
+    assert conn.scalar(linked) is None
+    queue_due_reminders(conn, after_finance)
+    queue_due_reminders(conn, after_finance)
+    control_id = conn.scalars(linked).one()
+    branch_notice = conn.scalar(select(deliveries.c.id).where(
+        deliveries.c.card_id == control_id, deliveries.c.signal == "control:branch"))
+    notice = claim_delivery(conn, branch_notice, after_finance)
+    assert notice["chat_key"] == "branch"
+    assert finish_delivery(conn, branch_notice, notice["attempt_id"], external_id="branch")
+    after_delivery(conn, notice, after_finance)
+    queue_due_reminders(conn, after_finance + timedelta(minutes=39))
+    assert get_card(conn, control_id)["status"] == "branch"
+    final_at = after_finance + timedelta(minutes=40)
+    queue_due_reminders(conn, final_at)
+    assert get_card(conn, control_id)["assignment"]["chat"] == "headquarters"
+    lead = Actor("telegram", "4", "4")
+    assert take_control(conn, control_id, "control", 2, "Verify with accounting",
+                        final_at + timedelta(hours=1), lead, final_at) == 3
+    assert get_card(conn, refund_id)["status"] == "clarification"
+    assert answer_refund_question(conn, refund_id, "answer", 3, "Clarified", worker, final_at) == 4
+    assert record_refund_result(conn, refund_id, "no-refund", 4, "not_required",
+                                "Previously refunded", finance, final_at) == 5
+    assert get_card(conn, control_id)["status"] == "closed"
 
     task = make_task(conn, settings["id"], "task", "Fix", "Working", now + timedelta(hours=1),
                      {"chat": "enterprise", "role": "service_account", "user": "0"},

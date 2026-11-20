@@ -7,6 +7,7 @@ from sqlalchemy.engine import Connection
 
 from ama_rs.enterprises import chat_is_open, get_enterprise
 from ama_rs.processes import cards, deliveries, elapse_timer, enqueue, get_card, start_timer, timers, utc_value
+from ama_rs.refund_control import REFUND_DONE, move_to_final, open_control
 from ama_rs.timing import effective
 
 TERMINAL = {"closed", "accepted", "executed", "not_required"}
@@ -16,6 +17,7 @@ TIMER_RANK = {
     "refund_reminder_1": 1, "refund_reminder_2": 2, "refund_reminder_3": 3,
     "financial_deadline": 4, "refund_followup": 5,
     "review_reminder": 1, "review_overdue": 2, "review_escalation": 3,
+    "control_reminder_1": 1, "control_reminder_2": 2, "control_final": 3,
 }
 
 
@@ -71,6 +73,14 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
         for deadline in _work_deadlines(settings, chat, delivered_at, (10,)):
             start_timer(connection, card["id"], "refund_followup", delivered_at,
                         deadline - delivered_at, delivery_id=record["id"])
+    elif card["kind"] == "refund_control" and payload.get("kind") == "refund_control":
+        if payload.get("card_revision") != card["revision"] or card["status"] not in {"branch", "final"}:
+            return
+        keys = ("control_reminder_1", "control_reminder_2", "control_final")
+        limits = effective(settings, f"refund.control.{card['status']}")
+        for key, deadline in zip(keys, _work_deadlines(settings, chat, delivered_at, limits)):
+            start_timer(connection, card["id"], key, delivered_at, deadline - delivered_at,
+                        delivery_id=record["id"])
 
 
 def _target(card, key: str, settings: dict) -> str | None:
@@ -82,8 +92,6 @@ def _target(card, key: str, settings: dict) -> str | None:
         role = card["data"]["reviewer"]["role"]
         return _unique_route(settings, "branch" if role == "manager" else settings["final_route"])
     if card["kind"] == "refund":
-        if key in {"financial_deadline", "refund_followup"}:
-            return _unique_route(settings, "branch")
         return card["data"]["worker"]["chat"]
     return card["assignment"]["chat"]
 
@@ -100,10 +108,18 @@ def queue_due_reminders(connection: Connection, now: datetime) -> None:
         card = get_card(connection, card_id, lock=True)
         if card["status"] in TERMINAL:
             continue
+        if card["kind"] == "refund_control" and get_card(connection, card["parent_id"])["status"] in REFUND_DONE:
+            continue
         settings = get_enterprise(connection, card["enterprise_id"])["settings"]
         emitted = set()
         for key in sorted(keys, key=lambda item: TIMER_RANK.get(item, 0), reverse=True):
             if not elapse_timer(connection, card_id, key, now):
+                continue
+            if key == "control_final":
+                move_to_final(connection, card, now)
+                break
+            if key == "refund_followup":
+                open_control(connection, card, now)
                 continue
             target = _target(card, key, settings)
             payload = {"kind": "reminder", "timer": key, "card_revision": card["revision"]}
@@ -113,9 +129,11 @@ def queue_due_reminders(connection: Connection, now: datetime) -> None:
                     deliveries.c.card_id == card_id, deliveries.c.chat_key == finance,
                     deliveries.c.signal.startswith("timer:"), deliveries.c.state == "sent",
                 ).limit(1))
-                if prior is None:
-                    target = finance
-                    payload["await_financial_receipt"] = True
+                if prior is not None:
+                    open_control(connection, card, now)
+                    continue
+                target = finance
+                payload["await_financial_receipt"] = True
             if not target or target in emitted or target not in settings["chats"]:
                 continue
             connection.execute(update(deliveries).where(

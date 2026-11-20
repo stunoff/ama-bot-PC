@@ -24,6 +24,11 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
     status = f"{card['kind']} · {card['status']} · {card['id']} · v{card['revision']}"
     if payload.get("kind") == "reminder":
         return f"Требуется действие: {status} · {payload['timer']}", None
+    if payload.get("kind") == "refund_control":
+        amount = data["requested_kopecks"] / 100
+        return (f"Просрочен онлайн-возврат {data['refund_id']}\n"
+                f"Бренд: {data['brand']} · {amount:.2f} ₽\n"
+                f"Контроль: {card['id']} · версия {card['revision']}"), None
     if payload.get("kind") == "report":
         period = data["report"]
         latest = summary(connection, card["enterprise_id"], date.fromisoformat(period["from"]),

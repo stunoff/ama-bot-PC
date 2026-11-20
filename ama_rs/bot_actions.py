@@ -9,6 +9,7 @@ from sqlalchemy.engine import Connection
 from ama_rs import contact_center, operations, personnel, refunds, requests, shifts
 from ama_rs.enterprises import Actor
 from ama_rs.processes import ProcessConflict
+from ama_rs.refund_control import take_control
 
 ACTIONS = {
     "cash.document": shifts.add_cash_document,
@@ -48,6 +49,7 @@ ACTIONS = {
     "refund.result": refunds.record_refund_result,
     "refund.ask": refunds.ask_refund_question,
     "refund.answer": refunds.answer_refund_question,
+    "refund.control": take_control,
 }
 
 DATE_FIELDS = {"due_at", "next_due", "deadline"}

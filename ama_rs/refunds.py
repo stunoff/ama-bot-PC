@@ -11,6 +11,7 @@ from ama_rs.processes import (
     ProcessConflict, ProcessPermissionError, Transition, apply_action, cards,
     create_card, enqueue, get_card, start_timer,
 )
+from ama_rs.refund_control import control_routes, finish_control
 from ama_rs.requests import _validate_recipient, settings_for
 from ama_rs.shifts import route
 from ama_rs.timing import effective
@@ -49,7 +50,8 @@ def request_refund(connection: Connection, enterprise_id: str, source_key: str,
     requester = {"chat": origin, "role": role, "user": actor.user_id}
     card = create_card(connection, enterprise_id, "refund", source_key, worker,
         {"brand": brand, "order_reference": order_reference, "reason": reason,
-         "requested_kopecks": amount, "positions": positions, "worker": worker, "requester": requester},
+         "requested_kopecks": amount, "positions": positions, "worker": worker, "requester": requester,
+         "control_routes": control_routes(settings)},
         now, parent_id=parent_id)
     enqueue(connection, card["id"], "financial-request", financial_chat, {"kind": "card"}, now)
     enqueue(connection, card["id"], "management-info", management, {"kind": "financial_status"}, now)
@@ -126,6 +128,7 @@ def record_refund_result(connection: Connection, card_id: str, command_id: str, 
         Transition("record_refund_result", frozenset(allowed), outcome, frozenset({"finance_executor"})),
         actor, worker["chat"], "finance_executor", now, updates={"financial_reference": reference})
     if outcome != "uncertain":
+        finish_control(connection, card_id, now)
         enqueue(connection, card_id, "financial-result", card["data"]["requester"]["chat"],
                 {"kind": "financial_result", "outcome": outcome}, now)
     return new_revision

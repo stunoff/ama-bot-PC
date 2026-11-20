@@ -6,6 +6,8 @@ DEFAULTS = {
     "technical.critical": (5, 10, 15),
     "technical.vipart": (5, 15, 25),
     "refund.execution": (30, 60, 720, 1440),
+    "refund.control.branch": (10, 20, 40),
+    "refund.control.final": (10, 20),
     "task.review": (30, 45, 60),
     "technical.review": (30, 45),
 }
