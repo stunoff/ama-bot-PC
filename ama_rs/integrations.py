@@ -17,6 +17,7 @@ from ama_rs.chat_menu import Screen, consume, menu, screen
 from ama_rs.contact_center import OPERATIONS, take_operation
 from ama_rs.enterprises import Actor, enterprises, get_enterprise, has_role
 from ama_rs.messengers import Message
+from ama_rs.operator_shift import CHECKS, shift_card
 from ama_rs.personnel import claim_invite, people, record_work_time, synchronize_person
 from ama_rs.processes import ProcessConflict, ProcessPermissionError, cards, create_card, enqueue, get_card, utc_value
 from ama_rs.refunds import take_refund
@@ -64,7 +65,7 @@ def _scope(settings: dict, actor: Actor, now: datetime) -> list[str]:
 
 COMMANDS = {
     "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result",
-    "/step", "/photo", "/checklist", "/cash_menu", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help",
+    "/step", "/photo", "/checklist", "/cash_menu", "/operator_shift", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help",
 }
 
 
@@ -138,7 +139,12 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
     if command == "/configure":
         return chat_admin.preview(connection, actor, now, arguments)
     if command == "/workflow":
-        return workflow_action(connection, arguments, command_id, actor, now, file_id=file_id)
+        response = workflow_action(connection, arguments, command_id, actor, now, file_id=file_id)
+        action, _, data = arguments.partition(" ")
+        if data and action in {"operator_shift.move", "operator_shift.check", "operator_shift.photo"}:
+            return _dispatch(connection, "/operator_shift", json.loads(data)["card_id"],
+                             command_id, actor, now, None)
+        return response
     if command == "/link" or (command == "/start" and arguments.startswith("invite_")):
         token = arguments.removeprefix("invite_").strip()
         claim_invite(connection, token, actor, now)
@@ -165,6 +171,35 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
                 f"Если нужно фото, добавьте подпись /photo {card_id} {step} problem\n"
                 f"Затем завершите пункт:\n/step {card_id} {card['revision']} {step} problem " +
                 '{"description":"…"}')
+    if command == "/operator_shift":
+        card = shift_card(connection, arguments.strip(), actor, now)
+        status = card["status"]
+        fields = {"card_id": card["id"], "revision": card["revision"]}
+        complete = card["data"]["results"]
+        links = []
+        text = f"Смена оператора · {status}"
+        if status in CHECKS:
+            remaining = [key for key in CHECKS[status] if key not in complete]
+            if remaining:
+                item = next((key for key in remaining if key not in card["data"]["issues"]), remaining[0])
+                title, photo = CHECKS[status][item]
+                choice = "/workflow operator_shift.check " + json.dumps(fields | {"item": item})
+                text += f"\n{title}"
+                if photo:
+                    text += ("\nПодпись к скриншоту:\n/workflow operator_shift.photo " +
+                             json.dumps({"card_id": card["id"], "item": item}))
+                text += "\nСообщить проблему: " + choice[:-1] + ', "problem":"…"}'
+                links.append(("Проверено", {"text": choice}))
+        stages = {"planned": ("Открыть смену", "open"), "serving": ("Продолжить открытие", "continue"),
+                  "active": ("Закрыть смену", "close"), "closing": ("Подтвердить закрытие", "confirm")}
+        if status in stages and (status != "closing" or not remaining):
+            label, action = stages[status]
+            command_text = "/workflow operator_shift.move " + json.dumps(fields | {"action": action})
+            if status == "serving" and card["data"].get("late_seconds") and not card["data"].get("late_reason"):
+                text += "\nУкажите причину опоздания: " + command_text[:-1] + ', "late_reason":"…"}'
+            else:
+                links.append((label, {"text": command_text}))
+        return screen(connection, actor, now, text, links + [("Мои задачи", {"text": "/tasks"})])
     if command == "/cash_menu":
         card_id = arguments.strip()
         cash = get_card(connection, card_id)
@@ -216,6 +251,8 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
                         if row["status"] == "filling" and row["kind"] in {"morning_checklist", "evening_checklist"}:
                             links.append((f"Открыть чек-лист · {row['id'][:8]}",
                                           {"text": f"/checklist {row['id']}"}))
+                        if row["kind"] == "operator_shift":
+                            links.append(("Смена оператора", {"text": f"/operator_shift {row['id']}"}))
                         if row["status"] == "open" and row["kind"] == "operator_handoff":
                             fields = {"card_id": row["id"], "revision": row["revision"],
                                       "accepted": True, "reason": ""}

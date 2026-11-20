@@ -9,6 +9,7 @@ from sqlalchemy.engine import Connection
 from ama_rs import contact_center, operations, personnel, refunds, requests, shifts
 from ama_rs.enterprises import Actor
 from ama_rs.cash_discrepancy import explain_discrepancy, refer_discrepancy
+from ama_rs.operator_shift import add_shift_photo, move_shift, plan_shift, record_shift_check
 from ama_rs.operator_handoff import offer_handoff, respond_handoff
 from ama_rs.processes import ProcessConflict
 from ama_rs.refund_control import take_control
@@ -48,6 +49,10 @@ ACTIONS = {
     "operation.start": contact_center.start_operation,
     "operation.morning": contact_center.submit_morning_operation,
     "operation.take": contact_center.take_operation,
+    "operator_shift.plan": plan_shift,
+    "operator_shift.move": move_shift,
+    "operator_shift.check": record_shift_check,
+    "operator_shift.photo": add_shift_photo,
     "operation.handoff": offer_handoff,
     "operation.handoff_response": respond_handoff,
     "operation.order_ready": contact_center.mark_order_ready,
@@ -62,7 +67,7 @@ ACTIONS = {
     "refund.control": take_control,
 }
 
-DATE_FIELDS = {"due_at", "next_due", "deadline"}
+DATE_FIELDS = {"planned_start", "planned_end", "due_at", "next_due", "deadline"}
 SERVER_FIELDS = {"connection", "actor", "now", "command_id", "file_id"}
 
 
@@ -100,6 +105,8 @@ def workflow_action(connection: Connection, expression: str, command_id: str, ac
     bound = signature.bind(**params, **{key: value for key, value in server.items()
                                         if key in signature.parameters})
     result = handler(*bound.args, **bound.kwargs)
+    if result is None:
+        return "Материал сохранён."
     if isinstance(result, (int, str)):
         return f"Готово · {result}"
     return f"Карточка {result['id']} · версия {result['revision']}"

@@ -295,10 +295,11 @@ def claim_delivery(connection: Connection, delivery_id: str, now: datetime):
     expected = record["payload"].get("card_revision")
     expected_chat = record["payload"].get("expected_chat")
     question = record["payload"].get("question_round")
+    stale_shift_summary = record["payload"].get("kind") == "operator_shift_summary" and card["status"] == "closed"
     stale_question = question is not None and (
         card["status"] != "clarification" or question != card["data"].get("question_round")
     )
-    if stale_question or (expected is not None and card["revision"] != expected) or (
+    if stale_shift_summary or stale_question or (expected is not None and card["revision"] != expected) or (
         expected_chat is not None and any(chat.get(field) != value for field, value in expected_chat.items())
     ):
         connection.execute(update(deliveries).where(deliveries.c.id == delivery_id)

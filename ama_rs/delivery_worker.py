@@ -11,6 +11,7 @@ from ama_rs.chat_menu import buttons
 from ama_rs.db import create_database_engine
 from ama_rs.messengers import definitely_rejected, edit_message, send_message
 from ama_rs.processes import attachments, claim_delivery, deliveries, finish_delivery, get_card, utc_value
+from ama_rs.operator_shift import outstanding
 from ama_rs.reminders import after_delivery, queue_due_reminders
 from ama_rs.reports import format_summary, schedule_reports, summary
 from ama_rs.shift_scheduler import schedule_checklists
@@ -24,6 +25,18 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
     status = f"{card['kind']} · {card['status']} · {card['id']} · v{card['revision']}"
     if payload.get("kind") == "reminder":
         return f"Требуется действие: {status} · {payload['timer']}", None
+    if payload.get("kind") == "operator_shift_summary":
+        open_work = outstanding(connection, card)
+        return (f"Сводка к завершению смены · {card['assignment']['user']}\n"
+                f"Незавершённые задачи: {len(open_work)}\n" + "\n".join(open_work))[:3800], None
+    if payload.get("kind") == "operator_shift":
+        if payload.get("problem"):
+            return f"{status}\nПроблема ({payload['item']}): {payload['problem']}"[:3800], None
+        if card["status"] == "closed":
+            return (f"Смена оператора закрыта · {card['assignment']['user']}\n"
+                    f"Начало: {data['started_at']}\nОкончание: {data['ended_at']}\n"
+                    f"Рабочих минут: {data['worked_seconds'] // 60}"), None
+        return f"Подготовка оператора · {card['assignment']['user']}\n{status}", None
     if payload.get("kind") == "handoff_offer":
         return (f"Передача задачи {card['parent_id']}\n"
                 f"Получатель: {card['assignment']['user']}\n"
