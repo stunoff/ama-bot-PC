@@ -10,6 +10,7 @@ from sqlalchemy import select, update
 from ama_rs.db import create_database_engine
 from ama_rs.messengers import definitely_rejected, send_message
 from ama_rs.processes import attachments, claim_delivery, deliveries, finish_delivery, get_card, utc_value
+from ama_rs.reminders import queue_due_reminders
 from ama_rs.reports import format_summary, schedule_reports, summary
 
 
@@ -18,6 +19,8 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
     data = card["data"]
     payload = record["payload"]
     status = f"{card['kind']} · {card['status']} · {card['id']} · v{card['revision']}"
+    if payload.get("kind") == "reminder":
+        return f"Требуется действие: {status} · {payload['timer']}", None
     if payload.get("kind") == "report":
         period = data["report"]
         latest = summary(connection, card["enterprise_id"], date.fromisoformat(period["from"]),
@@ -89,6 +92,8 @@ def main() -> None:
             with engine.begin() as connection:
                 schedule_reports(connection, now)
             next_report_scan = time.monotonic() + 60
+        with engine.begin() as connection:
+            queue_due_reminders(connection, now)
         deliver_batch(engine, now)
         time.sleep(5)
 

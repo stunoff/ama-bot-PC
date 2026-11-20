@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from ama_rs.contact_center import close_operation, record_order_result, start_operation, take_operation
 from ama_rs.db import create_database_engine
-from ama_rs.enterprises import Actor, save_enterprise
+from ama_rs.enterprises import Actor, has_role, save_enterprise
 from ama_rs.processes import ProcessConflict
 
 now = datetime(2026, 11, 23, 12, tzinfo=UTC)
@@ -17,6 +17,12 @@ settings = {
                for i, (kind, role) in enumerate(zip(kinds, roles))],
 }
 worker, manager, operator = (Actor("telegram", str(i), str(i)) for i in range(3))
+combined = settings | {"grants": [
+    *settings["grants"],
+    {"chat": "contact_center", "role": "contact_center_lead", "user": "2"},
+]}
+assert not has_role(combined, operator, "contact_center", "operator", now)
+assert has_role(combined, operator, "contact_center", "contact_center_lead", now, work=False)
 with create_database_engine().begin() as conn:
     save_enterprise(conn, settings, 0, "test")
     data = {"reason": "Delay", "orders": [{"platform": "site", "number": "42", "date": "2026-11-23"}]}

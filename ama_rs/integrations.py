@@ -9,11 +9,13 @@ from uuid import uuid4
 from sqlalchemy import Column, DateTime, MetaData, String, Table, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import NoResultFound
 
+from ama_rs.bot_actions import workflow_action
 from ama_rs.contact_center import take_operation
 from ama_rs.enterprises import Actor, enterprises, has_role
 from ama_rs.messengers import Message
-from ama_rs.personnel import people, record_work_time, synchronize_person
+from ama_rs.personnel import claim_invite, people, record_work_time, synchronize_person
 from ama_rs.processes import ProcessConflict, ProcessPermissionError, cards, create_card, enqueue, utc_value
 from ama_rs.refunds import take_refund
 from ama_rs.reports import accessible_summaries, format_summary, import_coverage, import_order
@@ -63,7 +65,7 @@ def run_bot_command(connection: Connection, message: Message, now: datetime) -> 
     command, _, arguments = message.text.strip().partition(" ")
     command = command.split("@", 1)[0].lower()
     if command not in {
-        "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result", "/step", "/photo", "/report"
+        "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result", "/step", "/photo", "/report", "/workflow", "/link"
     }:
         return None
     if not claim_event(connection, message.actor.platform, message.event_id, now):
@@ -74,12 +76,18 @@ def run_bot_command(connection: Connection, message: Message, now: datetime) -> 
     try:
         with connection.begin_nested():
             return _dispatch(connection, command, arguments, command_id, actor, now, message.file_id)
-    except (ProcessConflict, ProcessPermissionError, ValueError, KeyError, TypeError, LookupError):
+    except (ProcessConflict, ProcessPermissionError, ValueError, TypeError, LookupError, NoResultFound, AttributeError):
         return "Действие недоступно. Проверьте команду, права и версию карточки."
 
 
 def _dispatch(connection: Connection, command: str, arguments: str, command_id: str,
               actor: Actor, now: datetime, file_id: str | None) -> str:
+    if command == "/workflow":
+        return workflow_action(connection, arguments, command_id, actor, now, file_id=file_id)
+    if command == "/link" or (command == "/start" and arguments.startswith("invite_")):
+        token = arguments.removeprefix("invite_").strip()
+        claim_invite(connection, token, actor, now)
+        return "Аккаунт ожидает подтверждения руководителем."
     if command in {"/start", "/menu"}:
         return ("АМА РС\n/tasks — назначенные карточки\n"
                 "/problem <предприятие> <описание> — сообщить проблему\n"
@@ -88,7 +96,8 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
                 "/step <ID> <версия> <пункт> <итог> — завершить пункт\n"
                 "/photo <ID> <пункт> <слот> — подпись к фото\n"
                 "/accept <ID> <версия> — принять чек-лист или кассу\n"
-                "/report <дата начала> <дата конца> — сводка до даты конца")
+                "/report <дата начала> <дата конца> — сводка до даты конца\n"
+                "/workflow — формы процессов")
     if command == "/report":
         start, end = (date.fromisoformat(value) for value in arguments.split())
         reports = accessible_summaries(connection, actor, now, start, end)

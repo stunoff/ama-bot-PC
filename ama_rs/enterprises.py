@@ -207,12 +207,15 @@ def has_role(
     if work and actor.platform == "telegram" and role == "system_admin":
         if actor.topic_id not in (None, "1"):
             return False
-    return any(
-        grant["chat"] == chat_key and grant["role"] == role and grant["user"] == actor.user_id
+    current_roles = {
+        grant["role"] for grant in settings["grants"]
+        if grant["chat"] == chat_key and grant["user"] == actor.user_id
         and ("starts_at" not in grant or datetime.fromisoformat(grant["starts_at"]) <= instant)
         and ("ends_at" not in grant or instant < datetime.fromisoformat(grant["ends_at"]))
-        for grant in settings["grants"]
-    )
+    }
+    if work and chat["kind"] == "contact_center" and "contact_center_lead" in current_roles:
+        return False
+    return role in current_roles
 
 
 def chat_is_open(settings: dict, chat_key: str, instant: datetime) -> bool:
