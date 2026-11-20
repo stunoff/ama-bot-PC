@@ -26,6 +26,10 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
     status = f"{card['kind']} · {card['status']} · {card['id']} · v{card['revision']}"
     if payload.get("kind") == "reminder":
         return f"Требуется действие: {status} · {payload['timer']}", None
+    if payload.get("kind") == "route_probe":
+        return (f"Проверка маршрута АМА РС · {card['enterprise_id']}\n"
+                f"Назначенный участник, подтвердите получение в этой теме:\n"
+                f"/route_confirm {card['id']}\nДля проверки фото используйте команду в подписи к тестовому снимку."), None
     if payload.get("kind") == "accounting":
         correction = data["accounting"]
         return (f"Исправление учёта · {correction['status']}\n"

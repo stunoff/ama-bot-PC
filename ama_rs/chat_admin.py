@@ -9,6 +9,7 @@ from sqlalchemy.engine import Connection
 from ama_rs.admin_permissions import ADMIN_ROLES
 from ama_rs.chat_menu import admin_scope, configuration_fields, screen
 from ama_rs.enterprises import Actor, has_role, save_enterprise, validate_settings
+from ama_rs.route_probe import route_tests
 from ama_rs.readiness import readiness_report
 from ama_rs.processes import ProcessPermissionError
 from ama_rs.shifts import route
@@ -79,7 +80,30 @@ def readiness_screen(connection: Connection, actor: Actor, now: datetime, enterp
     if "admin_access" not in configuration_fields(entry["settings"], actor, now):
         raise ProcessPermissionError("Only a full administrator can inspect enterprise-wide readiness")
     return screen(connection, actor, now, readiness_report(connection, entry, now),
-                  [("Назад", {"text": f"/settings {enterprise_id}"})])
+                  [("Проверить маршруты", {"text": f"/route_tests {enterprise_id}"}),
+                   ("Назад", {"text": f"/settings {enterprise_id}"})])
+
+
+def route_tests_screen(connection: Connection, actor: Actor, now: datetime, enterprise_id: str, page: int):
+    entry = _entry(connection, actor, now, enterprise_id)
+    if "admin_access" not in configuration_fields(entry["settings"], actor, now):
+        raise ProcessPermissionError("Only a full administrator can test routes")
+    routes = route_tests(connection, entry, now)
+    if page < 0 or page > max(0, (len(routes) - 1) // 8):
+        raise ValueError("Invalid page")
+    start = page * 8
+    visible = routes[start:start + 8]
+    text = f"Проверка маршрутов · {entry['id']}\n" + "\n".join(
+        f"{key}: {status}" for key, status in visible)
+    links = [(f"Проверить {key}"[:60], {
+        "route_probe": {"enterprise_id": enterprise_id, "key": key, "revision": entry["revision"]}
+    }) for key, _ in visible if entry["settings"]["chats"][key].get("calendar")]
+    if page:
+        links.append(("Предыдущая", {"text": f"/route_tests {enterprise_id} {page - 1}"}))
+    if start + 8 < len(routes):
+        links.append(("Следующая", {"text": f"/route_tests {enterprise_id} {page + 1}"}))
+    links.append(("К готовности", {"text": f"/readiness {enterprise_id}"}))
+    return screen(connection, actor, now, text, links)
 
 
 def preview(connection: Connection, actor: Actor, now: datetime, arguments: str):

@@ -23,6 +23,7 @@ from ama_rs.operator_shift import CHECKS, shift_card
 from ama_rs.personnel import claim_invite, people, record_work_time, synchronize_person
 from ama_rs.processes import ProcessConflict, ProcessPermissionError, cards, create_card, enqueue, get_card, utc_value
 from ama_rs.refunds import take_refund
+from ama_rs.route_probe import confirm_probe, start_probe
 from ama_rs.reports import accessible_summaries, format_summary, import_coverage, import_order
 from ama_rs.requests import report_problem, submit_result, take_request
 from ama_rs.shifts import (
@@ -67,7 +68,7 @@ def _scope(settings: dict, actor: Actor, now: datetime) -> list[str]:
 
 COMMANDS = {
     "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result",
-    "/step", "/photo", "/accounting", "/checklist", "/cash_menu", "/operator_shift", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help", "/readiness",
+    "/step", "/photo", "/accounting", "/checklist", "/cash_menu", "/operator_shift", "/report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help", "/readiness", "/route_tests", "/route_confirm",
 }
 
 
@@ -87,6 +88,11 @@ def run_bot_command(connection: Connection, message: Message, now: datetime) -> 
             if "admin_save" in callback:
                 with connection.begin_nested():
                     return chat_admin.save(connection, actor, now, callback["admin_save"])
+            if "route_probe" in callback:
+                with connection.begin_nested():
+                    card_id = start_probe(connection, command_id=command_id, actor=actor, now=now,
+                                          **callback["route_probe"])
+                    return f"Проверка маршрута поставлена в очередь · {card_id[:8]}"
             if "report" in callback:
                 reports = accessible_summaries(connection, actor, now)
                 return "\n\n".join(map(format_summary, reports))[:3800]
@@ -144,6 +150,12 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
         return chat_admin.settings_screen(connection, actor, now, arguments.strip())
     if command == "/settings_help":
         return chat_admin.help_text(connection, actor, now, arguments.strip())
+    if command == "/route_tests":
+        enterprise_id, *page = arguments.split()
+        return chat_admin.route_tests_screen(connection, actor, now, enterprise_id, int(page[0]) if page else 0)
+    if command == "/route_confirm":
+        confirm_probe(connection, arguments.strip(), command_id, actor, now, file_id=file_id)
+        return "Доставка и ответ в рабочем чате подтверждены."
     if command == "/readiness":
         return chat_admin.readiness_screen(connection, actor, now, arguments.strip())
     if command == "/configure":
@@ -240,6 +252,7 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
             records = connection.execute(select(cards).where(
                 cards.c.enterprise_id == entry["id"],
                 cards.c.status.not_in(("closed", "accepted", "executed", "not_required")),
+                cards.c.kind != "route_probe",
             ).order_by(cards.c.created_at.desc()).limit(100)).mappings()
             for row in records:
                 target = row["assignment"]

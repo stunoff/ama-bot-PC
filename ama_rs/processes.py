@@ -302,7 +302,10 @@ def claim_delivery(connection: Connection, delivery_id: str, now: datetime):
     stale_question = question is not None and (
         card["status"] != "clarification" or question != card["data"].get("question_round")
     )
-    if stale_shift_summary or stale_question or (expected is not None and card["revision"] != expected) or (
+    expired_probe = card["kind"] == "route_probe" and (
+        card["status"] != "open" or utc_value(datetime.fromisoformat(card["data"]["expires_at"])) <= utc_value(now)
+    )
+    if expired_probe or stale_shift_summary or stale_question or (expected is not None and card["revision"] != expected) or (
         expected_chat is not None and any(chat.get(field) != value for field, value in expected_chat.items())
     ):
         connection.execute(update(deliveries).where(deliveries.c.id == delivery_id)
