@@ -5,14 +5,16 @@ from datetime import date, datetime
 from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
-from ama_rs.enterprises import Actor, has_role
+from ama_rs.enterprises import Actor, has_role, work_deadlines
+from ama_rs.guest_contact import guest_timer_keys
 from ama_rs.processes import (
     ProcessConflict, ProcessPermissionError, Transition, apply_action, cards,
-    create_card, enqueue, get_card,
+    create_card, enqueue, get_card, start_timer,
 )
 from ama_rs.request_control import finish_request_control
 from ama_rs.requests import settings_for
 from ama_rs.shifts import route
+from ama_rs.timing import effective
 
 MORNING_SEQUENCE = ("stop_list", "delivery", "go_list")
 OPERATIONS = set(MORNING_SEQUENCE) | {"suspension", "order_request", "order_delay", "redelivery"}
@@ -140,10 +142,20 @@ def record_order_result(connection: Connection, card_id: str, command_id: str, r
     if order not in current or result not in CONTACT_RESULTS:
         raise ValueError("Unknown order or guest contact result")
     assigned = card["assignment"]
-    return apply_action(connection, card_id, command_id, revision,
+    first_misses = card["data"].get("first_misses", {})
+    first_attempt = result == "not_reached" and order not in first_misses
+    if first_attempt:
+        first_misses = first_misses | {order: now.isoformat()}
+    updated = apply_action(connection, card_id, command_id, revision,
         Transition("record_order_result", frozenset({"working"}), None, frozenset({assigned["role"]})),
         actor, assigned["chat"], assigned["role"], now,
-        updates={"order_results": current | {order: result}})
+        updates={"order_results": current | {order: result}, "first_misses": first_misses})
+    if first_attempt:
+        settings = settings_for(connection, card["enterprise_id"])
+        limits = effective(settings, "operation.guest_contact")
+        for key, deadline in zip(guest_timer_keys(order), work_deadlines(settings, assigned["chat"], now, limits)):
+            start_timer(connection, card_id, key, now, deadline - now)
+    return updated
 
 
 def close_operation(connection: Connection, card_id: str, command_id: str, revision: int,

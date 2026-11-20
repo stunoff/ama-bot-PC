@@ -1,12 +1,14 @@
 """Convert elapsed workflow deadlines into scoped delivery obligations."""
 
+from hashlib import sha256
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update
 from sqlalchemy.engine import Connection
 
-from ama_rs.enterprises import chat_is_open, get_enterprise
+from ama_rs.enterprises import chat_is_open, get_enterprise, work_deadlines
+from ama_rs.guest_contact import pending_guest_orders
 from ama_rs.processes import cards, deliveries, elapse_timer, enqueue, get_card, start_timer, timers, utc_value
 from ama_rs.refund_control import REFUND_DONE, move_to_final, open_control
 from ama_rs.request_control import advance_request_control, open_request_control
@@ -29,34 +31,6 @@ TIMER_RANK = {
 }
 
 
-def _work_deadlines(settings: dict, target: str, start: datetime, limits: tuple[int, ...]):
-    """Return UTC deadlines after the requested cumulative open minutes."""
-    cursor = start.astimezone(UTC)
-    if target not in settings["chats"]:
-        return
-    chat = settings["chats"][target]
-    if chat.get("calendar") == "always" and not chat.get("calendar_exceptions"):
-        for limit in limits:
-            yield cursor + timedelta(minutes=limit)
-        return
-    if not chat.get("calendar") and not chat.get("calendar_exceptions"):
-        return
-
-    elapsed = timedelta()
-    thresholds = iter(map(lambda count: timedelta(minutes=count), limits))
-    threshold = next(thresholds, None)
-    horizon = cursor + timedelta(days=14)
-    while threshold is not None and cursor < horizon:
-        next_minute = cursor.replace(second=0, microsecond=0) + timedelta(minutes=1)
-        if chat_is_open(settings, target, cursor):
-            available = next_minute - cursor
-            while threshold is not None and elapsed + available >= threshold:
-                yield cursor + (threshold - elapsed)
-                threshold = next(thresholds, None)
-            elapsed += available
-        cursor = next_minute
-
-
 def after_delivery(connection: Connection, record: dict, delivered_at: datetime) -> None:
     card = get_card(connection, record["card_id"], lock=True)
     payload = record["payload"]
@@ -69,11 +43,11 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
             and payload.get("card_revision") == card["revision"]):
         keys = ("review_reminder", "review_overdue", "review_escalation")
         limits = effective(settings, f"{card['kind']}.review")
-        for key, deadline in zip(keys, _work_deadlines(settings, chat, delivered_at, limits)):
+        for key, deadline in zip(keys, work_deadlines(settings, chat, delivered_at, limits)):
             start_timer(connection, card["id"], key, delivered_at, deadline - delivered_at,
                         delivery_id=record["id"])
     elif card["kind"] == "refund" and payload.get("await_financial_receipt"):
-        for deadline in _work_deadlines(settings, chat, delivered_at, (10,)):
+        for deadline in work_deadlines(settings, chat, delivered_at, (10,)):
             start_timer(connection, card["id"], "refund_followup", delivered_at,
                         deadline - delivered_at, delivery_id=record["id"])
     elif card["kind"] == "refund_control" and payload.get("kind") == "refund_control":
@@ -81,7 +55,7 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
             return
         keys = ("control_reminder_1", "control_reminder_2", "control_final")
         limits = effective(settings, f"refund.control.{card['status']}")
-        for key, deadline in zip(keys, _work_deadlines(settings, chat, delivered_at, limits)):
+        for key, deadline in zip(keys, work_deadlines(settings, chat, delivered_at, limits)):
             start_timer(connection, card["id"], key, delivered_at, deadline - delivered_at,
                         delivery_id=record["id"])
     elif card["kind"] == "request_control" and payload.get("kind") == "request_control":
@@ -98,7 +72,7 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
             limits = limits[:1]
         for key, deadline in zip(
             ("request_control_reminder", "request_control_advance"),
-            _work_deadlines(settings, chat, delivered_at, limits),
+            work_deadlines(settings, chat, delivered_at, limits),
         ):
             start_timer(connection, card["id"], key, delivered_at, deadline - delivered_at,
                         delivery_id=record["id"])
@@ -140,7 +114,7 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
 
 
 def _delivery_clocks(connection, card, record, settings, delivered_at, keys, limits):
-    for key, deadline in zip(keys, _work_deadlines(settings, record["chat_key"], delivered_at, limits)):
+    for key, deadline in zip(keys, work_deadlines(settings, record["chat_key"], delivered_at, limits)):
         start_timer(connection, card["id"], key, delivered_at, deadline - delivered_at,
                     delivery_id=record["id"])
 
@@ -159,7 +133,7 @@ def _cash_review_clock(connection, card, delivery_id, settings, now):
         if chat_is_open(settings, key, candidate - timedelta(microseconds=1)):
             due = max(candidate, now + timedelta(seconds=1))
             start_timer(connection, card["id"], "cash_review_due", now, due - now, delivery_id=delivery_id)
-            for deadline in _work_deadlines(settings, key, due, effective(settings, "cash.review_overdue")):
+            for deadline in work_deadlines(settings, key, due, effective(settings, "cash.review_overdue")):
                 start_timer(connection, card["id"], "cash_review_escalation", now, deadline - now,
                             delivery_id=delivery_id)
             return
@@ -183,6 +157,29 @@ def _target(card, key: str, settings: dict) -> str | None:
     return card["assignment"]["chat"]
 
 
+def _queue_guest_reminders(connection: Connection, card, keys: list[str], now: datetime) -> None:
+    orders = pending_guest_orders(card)
+    due_keys = [key for key in keys if key.startswith("guest_") and elapse_timer(
+        connection, card["id"], key, now
+    )]
+    people = {orders[key] for key in due_keys if key in orders}
+    if people:
+        pending = connection.execute(select(deliveries.c.id, deliveries.c.payload).where(
+            deliveries.c.card_id == card["id"], deliveries.c.signal.startswith("guest-contact:"),
+            deliveries.c.state == "pending",
+        ).with_for_update()).all()
+        outstanding = set(orders.values())
+        for item in pending:
+            people.update(outstanding.intersection(item.payload["guest_orders"]))
+        if pending:
+            connection.execute(update(deliveries).where(
+                deliveries.c.id.in_([item.id for item in pending])
+            ).values(state="superseded"))
+        batch = sha256("|".join(sorted(due_keys)).encode()).hexdigest()[:24]
+        enqueue(connection, card["id"], f"guest-contact:{batch}", card["assignment"]["chat"],
+                {"kind": "guest_contact", "guest_orders": sorted(people)}, now)
+
+
 def queue_due_reminders(connection: Connection, now: datetime) -> None:
     due = connection.execute(select(timers.c.card_id, timers.c.key).join(cards).where(
         timers.c.elapsed_at.is_(None), timers.c.due_at <= utc_value(now),
@@ -198,8 +195,9 @@ def queue_due_reminders(connection: Connection, now: datetime) -> None:
         if card["kind"] == "refund_control" and get_card(connection, card["parent_id"])["status"] in REFUND_DONE:
             continue
         settings = get_enterprise(connection, card["enterprise_id"])["settings"]
+        _queue_guest_reminders(connection, card, keys, now)
         emitted = set()
-        for key in sorted(keys, key=lambda item: TIMER_RANK.get(item, 0), reverse=True):
+        for key in sorted((key for key in keys if not key.startswith("guest_")), key=lambda item: TIMER_RANK.get(item, 0), reverse=True):
             if not elapse_timer(connection, card_id, key, now):
                 continue
             if key in {"operation_take_control_due", "operation_work_control_due"}:
@@ -223,7 +221,7 @@ def queue_due_reminders(connection: Connection, now: datetime) -> None:
                 elif card["data"]["priority"] == "critical":
                     escalations = (deadline + timedelta(minutes=5),)
                 else:
-                    escalations = _work_deadlines(settings, card["assignment"]["chat"], deadline, (10,))
+                    escalations = work_deadlines(settings, card["assignment"]["chat"], deadline, (10,))
                 for escalation in escalations:
                     start_timer(connection, card_id, "technical_plan_breach", deadline, escalation - deadline)
             if ((card["kind"] == "technical" and key in {"breach", "technical_plan_breach"})
@@ -239,7 +237,7 @@ def queue_due_reminders(connection: Connection, now: datetime) -> None:
                 continue
             if key == "request_owner_due" and card["data"]["index"] + 1 < len(card["data"]["route"]):
                 due = datetime.fromisoformat(card["data"]["next_due"])
-                for followup in _work_deadlines(settings, card["assignment"]["chat"], due, (10,)):
+                for followup in work_deadlines(settings, card["assignment"]["chat"], due, (10,)):
                     start_timer(connection, card_id, "request_control_advance", due, followup - due)
             target = _target(card, key, settings)
             payload = {"kind": "reminder", "timer": key, "card_revision": card["revision"]}

@@ -24,6 +24,8 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
     status = f"{card['kind']} · {card['status']} · {card['id']} · v{card['revision']}"
     if payload.get("kind") == "reminder":
         return f"Требуется действие: {status} · {payload['timer']}", None
+    if payload.get("kind") == "guest_contact":
+        return f"Нет решения после недозвона · заказов: {len(payload['guest_orders'])}\n{status}", None
     if payload.get("kind") == "request_control":
         source = get_card(connection, card["parent_id"])
         return (f"Требуется управленческое решение · {source['kind']} · {source['id']}\n"

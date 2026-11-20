@@ -1,7 +1,7 @@
 """Enterprise configuration, calendars, and exact-scope permissions."""
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import JSON, Column, Integer, MetaData, String, Table, insert, select, update
@@ -275,3 +275,31 @@ def chat_is_open(settings: dict, chat_key: str, instant: datetime) -> bool:
         ):
             return True
     return False
+
+
+def work_deadlines(settings: dict, target: str, start: datetime, limits: tuple[int, ...]):
+    """Return UTC deadlines after the requested cumulative open minutes."""
+    cursor = start.astimezone(UTC)
+    if target not in settings["chats"]:
+        return
+    chat = settings["chats"][target]
+    if chat.get("calendar") == "always" and not chat.get("calendar_exceptions"):
+        for limit in limits:
+            yield cursor + timedelta(minutes=limit)
+        return
+    if not chat.get("calendar") and not chat.get("calendar_exceptions"):
+        return
+
+    elapsed = timedelta()
+    thresholds = iter(map(lambda count: timedelta(minutes=count), limits))
+    threshold = next(thresholds, None)
+    horizon = cursor + timedelta(days=14)
+    while threshold is not None and cursor < horizon:
+        next_minute = cursor.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        if chat_is_open(settings, target, cursor):
+            available = next_minute - cursor
+            while threshold is not None and elapsed + available >= threshold:
+                yield cursor + (threshold - elapsed)
+                threshold = next(thresholds, None)
+            elapsed += available
+        cursor = next_minute
