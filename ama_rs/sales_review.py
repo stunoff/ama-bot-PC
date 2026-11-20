@@ -1,12 +1,14 @@
 """Explanations and management review for existing iiko sales documents."""
 
 from datetime import datetime
+from hashlib import sha256
 
 from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
 from ama_rs.enterprises import Actor, get_enterprise
 from ama_rs.processes import ProcessConflict, Transition, apply_action, attach, attachments, enqueue, get_card
+from ama_rs.requests import make_task
 from ama_rs.shifts import route
 
 SALES_DOCUMENTS = {"sales.writeoff", "sales.return"}
@@ -97,5 +99,24 @@ def ask_sale_question(connection: Connection, card_id: str, command_id: str, rev
 def accept_sale_explanation(connection: Connection, card_id: str, command_id: str, revision: int,
                             actor: Actor, now: datetime) -> int:
     card, settings = _sale(connection, card_id)
-    return _submit(connection, card, command_id, revision, "sales_accept", {"review"}, "closed",
+    task_id = card["data"].get("linked_sale_task")
+    if card["status"] == "task" and (not task_id or get_card(connection, task_id)["status"] != "closed"):
+        raise ProcessConflict("Accept the linked task before closing the sales review")
+    return _submit(connection, card, command_id, revision, "sales_accept", {"review", "task"}, "closed",
                    actor, route(settings, "management"), "manager", now, updates={"reviewed": True})
+
+
+def assign_sale_task(connection: Connection, card_id: str, command_id: str, revision: int,
+                     title: str, expected_result: str, recipient: dict, due_at: datetime,
+                     actor: Actor, now: datetime) -> str:
+    card, settings = _sale(connection, card_id)
+    manager = route(settings, "management")
+    if card["status"] != "review" or card["revision"] != revision:
+        raise ProcessConflict("Only a current sales review can be assigned to a task")
+    source_key = sha256(f"sales:{card_id}:{command_id}".encode()).hexdigest()
+    task = make_task(connection, card["enterprise_id"], source_key, title,
+                     expected_result, due_at, recipient, {"chat": manager, "role": "manager"},
+                     actor, now, parent_id=card_id)
+    _submit(connection, card, command_id, revision, "sales_assign_task", {"review"}, "task",
+            actor, manager, "manager", now, updates={"linked_sale_task": task["id"]})
+    return task["id"]

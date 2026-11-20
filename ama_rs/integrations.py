@@ -70,7 +70,7 @@ def _scope(settings: dict, actor: Actor, now: datetime) -> list[str]:
 
 COMMANDS = {
     "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result",
-    "/step", "/photo", "/accounting", "/checklist", "/cash_menu", "/operator_shift", "/report", "/refund_report", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help", "/readiness", "/route_tests", "/route_confirm", "/checklist_setup", "/enterprise_new", "/scenarios",
+    "/step", "/photo", "/accounting", "/checklist", "/cash_menu", "/operator_shift", "/report", "/refund_report", "/sales_task_help", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help", "/readiness", "/route_tests", "/route_confirm", "/checklist_setup", "/enterprise_new", "/scenarios",
 }
 
 
@@ -185,6 +185,19 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
         return "Аккаунт ожидает подтверждения руководителем."
     if command in {"/start", "/menu"}:
         return menu(connection, actor, now)
+    if command == "/sales_task_help":
+        card_id = arguments.strip()
+        card = get_card(connection, card_id)
+        settings = get_enterprise(connection, card["enterprise_id"])["settings"]
+        if (card["kind"] not in {"sales.writeoff", "sales.return"} or card["status"] != "review"
+                or not has_role(settings, actor, card["assignment"]["chat"], "manager", now)):
+            raise ProcessPermissionError("This sales review cannot be assigned here")
+        form = {"card_id": card_id, "revision": card["revision"], "title": "…",
+                "expected_result": "…", "due_at": "YYYY-MM-DDTHH:MM:SS+03:00",
+                "recipient": {"chat": "…", "role": "service_account"}}
+        return "Укажите задачу, ожидаемый результат, срок и получателя.\n/workflow sales.task " + json.dumps(
+            form, ensure_ascii=False
+        )
     if command == "/refund_report":
         if not arguments:
             return ("/refund_report YYYY-MM-DD YYYY-MM-DD {фильтры}\n"
@@ -293,10 +306,18 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
                         if row["status"] == "filling" and row["kind"] in {"morning_checklist", "evening_checklist"}:
                             links.append((f"Открыть чек-лист · {row['id'][:8]}",
                                           {"text": f"/checklist {row['id']}"}))
-                        if row["status"] == "review" and row["kind"] in {"sales.writeoff", "sales.return"}:
-                            fields = json.dumps({"card_id": row["id"], "revision": row["revision"]})
-                            links.append((f"Принять объяснение · {row['id'][:8]}",
-                                          {"text": "/workflow sales.accept " + fields}))
+                        if row["kind"] in {"sales.writeoff", "sales.return"}:
+                            linked = row["data"].get("linked_sale_task")
+                            may_close = row["status"] == "review" or (
+                                row["status"] == "task" and linked and get_card(connection, linked)["status"] == "closed"
+                            )
+                            if may_close:
+                                fields = json.dumps({"card_id": row["id"], "revision": row["revision"]})
+                                links.append((f"Принять объяснение · {row['id'][:8]}",
+                                              {"text": "/workflow sales.accept " + fields}))
+                            if row["status"] == "review" and len(links) < 10:
+                                links.append((f"Создать поручение · {row['id'][:8]}",
+                                              {"text": f"/sales_task_help {row['id']}"}))
                         if row["kind"] == "operator_shift":
                             links.append(("Смена оператора", {"text": f"/operator_shift {row['id']}"}))
                         if row["status"] == "open" and row["kind"] == "operator_handoff":

@@ -14,7 +14,7 @@ from ama_rs.cash_discrepancy import explain_discrepancy, refer_discrepancy
 from ama_rs.operator_shift import add_shift_photo, move_shift, plan_shift, record_shift_check
 from ama_rs.operator_handoff import offer_handoff, respond_handoff
 from ama_rs.processes import ProcessConflict
-from ama_rs.sales_review import accept_sale_explanation, ask_sale_question, attach_sale_photo, submit_sale_explanation
+from ama_rs.sales_review import accept_sale_explanation, ask_sale_question, assign_sale_task, attach_sale_photo, submit_sale_explanation
 from ama_rs.refund_control import take_control
 from ama_rs.request_control import accept_request_control
 
@@ -33,6 +33,7 @@ ACTIONS = {
     "sales.explain": submit_sale_explanation,
     "sales.photo": attach_sale_photo,
     "sales.question": ask_sale_question,
+    "sales.task": assign_sale_task,
     "sales.accept": accept_sale_explanation,
     "cash.accept": shifts.accept_cash,
     "cash.discrepancy": refer_discrepancy,
