@@ -11,6 +11,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import NoResultFound
 
+from ama_rs.attendance import scan_attendance
 from ama_rs.bot_actions import workflow_action
 from ama_rs import chat_admin
 from ama_rs.chat_menu import Screen, consume, menu, screen
@@ -333,10 +334,13 @@ def ingest_iiko(connection: Connection, payload: dict, now: datetime) -> bool:
                          data["source_key"], datetime.fromisoformat(data["starts_at"]),
                          datetime.fromisoformat(data["ends_at"]) if data.get("ends_at") else None,
                          datetime.fromisoformat(data["observed_at"]))
+        scan_attendance(connection, now, enterprise_id=enterprise_id)
     elif kind == "orders.updated":
         import_order(connection, enterprise_id, data)
     elif kind == "source.coverage":
         import_coverage(connection, enterprise_id, data)
+        if data["source"] in {"schedule", "attendance"}:
+            scan_attendance(connection, now, enterprise_id=enterprise_id)
     elif kind == "shift.checklist_due":
         if not enterprise["settings"].get("scheduled_checklists"):
             begin_checklist(connection, enterprise_id, data["phase"], data["shift_id"], now)

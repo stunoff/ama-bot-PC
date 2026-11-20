@@ -8,6 +8,7 @@ from sqlalchemy.engine import Connection
 
 from ama_rs import contact_center, operations, personnel, refunds, requests, shifts
 from ama_rs.enterprises import Actor
+from ama_rs.attendance import acknowledge_deviation, answer_explanation, request_explanation
 from ama_rs.cash_discrepancy import explain_discrepancy, refer_discrepancy
 from ama_rs.operator_shift import add_shift_photo, move_shift, plan_shift, record_shift_check
 from ama_rs.operator_handoff import offer_handoff, respond_handoff
@@ -21,6 +22,9 @@ ACTIONS = {
     "cash.submit": shifts.submit_cash,
     "cash.ask": shifts.request_cash_clarification,
     "cash.answer": shifts.answer_cash_clarification,
+    "attendance.question": request_explanation,
+    "attendance.answer": answer_explanation,
+    "attendance.close": acknowledge_deviation,
     "sales.explain": submit_sale_explanation,
     "sales.photo": attach_sale_photo,
     "sales.question": ask_sale_question,

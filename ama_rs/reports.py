@@ -105,6 +105,7 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
     by_status = Counter()
     redelivery_causes = Counter()
     sales = {}
+    attendance = Counter()
     for row in records:
         if row["kind"] == "report":
             continue
@@ -125,6 +126,8 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
             if type(amount) is int:
                 metric["known_amount_kopecks"] += amount
                 metric["with_amount"] += 1
+        if row["kind"] == "attendance" and not row["data"].get("reconciled"):
+            attendance[row["data"]["deviation"]] += 1
         if row["kind"] == "redelivery":
             redelivery_causes[row["data"]["request"]["reason"]] += 1
 
@@ -170,7 +173,7 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
         "from": day_start.isoformat(), "until": day_end.isoformat(), "counts": dict(by_kind),
         "current_statuses": dict(by_status), "sources": quality, "redelivery_causes": dict(redelivery_causes),
         "orders": traffic if quality["orders"] != "unavailable" or has_order_data else None,
-        "unclassified_orders": unclassified, "sales": sales,
+        "unclassified_orders": unclassified, "sales": sales, "attendance": dict(attendance),
     }
 
 
@@ -248,4 +251,9 @@ def format_summary(data: dict) -> str:
                      f"не разобрано {stats['unreviewed']} · {labels[data['sources'][source]]}")
         if stats["reasons"]:
             lines.append(", ".join(f"{reason} — {count}" for reason, count in stats["reasons"].items()))
+    deviations = {"late": "опоздания", "early_leave": "ранние уходы", "no_arrival": "нет отметки прихода",
+                  "unclosed": "незакрытые смены"}
+    if data.get("attendance"):
+        lines.append("Отклонения: " + ", ".join(f"{deviations[key]} — {count}"
+                     for key, count in data["attendance"].items()))
     return "\n".join(lines)

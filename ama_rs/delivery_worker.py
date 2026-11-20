@@ -7,6 +7,7 @@ from urllib.error import HTTPError
 
 from sqlalchemy import delete, select, update
 
+from ama_rs.attendance import scan_attendance
 from ama_rs.chat_menu import buttons
 from ama_rs.db import create_database_engine
 from ama_rs.messengers import definitely_rejected, edit_message, send_message
@@ -33,6 +34,13 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
         photo = "\nФото не предоставлено" if explanation["missing_photo"] else ""
         return (f"{status}\nДокумент iiko: {card['source_key']}\nПричина: {explanation['reason']}\n"
                 f"{explanation['comment']}{photo}")[:3800], None
+    if payload.get("kind") in {"attendance", "attendance_question", "attendance_answer"}:
+        labels = {"no_arrival": "Приход не зафиксирован", "late": "Опоздание",
+                  "unclosed": "Смена не закрыта", "early_leave": "Ранний уход"}
+        details = payload.get("question") or data.get("reason") or ""
+        return (f"{labels[data['deviation']]} · {data['employee']}\n"
+                f"План: {data['planned_at']} · факт: {data['actual_at'] or '—'}\n"
+                f"{details}\n{status}")[:3800], None
     if payload.get("kind") == "operator_shift_summary":
         open_work = outstanding(connection, card)
         return (f"Сводка к завершению смены · {card['assignment']['user']}\n"
@@ -153,6 +161,7 @@ def main() -> None:
             with engine.begin() as connection:
                 connection.execute(delete(buttons).where(buttons.c.expires_at <= utc_value(now)))
                 schedule_checklists(connection, now)
+                scan_attendance(connection, now)
                 schedule_reports(connection, now)
             next_report_scan = time.monotonic() + 60
         with engine.begin() as connection:
