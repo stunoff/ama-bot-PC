@@ -12,6 +12,7 @@ DEFAULTS = {
     "cash.discrepancy": (30, 45),
     "cash.review_overdue": (120,),
     "operation.take": (5, 10),
+    "operation.handoff": (10,),
     "operation.mass_first_call": (5, 10, 15),
     "operation.guest_contact": (5, 10),
     "operation.order_take": (3, 5),

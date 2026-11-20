@@ -216,6 +216,12 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
                         if row["status"] == "filling" and row["kind"] in {"morning_checklist", "evening_checklist"}:
                             links.append((f"Открыть чек-лист · {row['id'][:8]}",
                                           {"text": f"/checklist {row['id']}"}))
+                        if row["status"] == "open" and row["kind"] == "operator_handoff":
+                            fields = {"card_id": row["id"], "revision": row["revision"],
+                                      "accepted": True, "reason": ""}
+                            links.append((f"Принять передачу · {row['id'][:8]}", {
+                                "text": "/workflow operation.handoff_response " + json.dumps(fields)
+                            }))
                         if row["status"] == "open" and row["kind"] in (OPERATIONS | {"task", "refund", "technical"}):
                             if target["role"] != "vipart_specialist":
                                 links.append((f"Взять · {row['id'][:8]}", {"text": f"/take {identifier}"}))

@@ -89,6 +89,10 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
         _delivery_clocks(connection, card, record, settings, delivered_at,
                          ("cash_discrepancy_due", "cash_discrepancy_escalation"),
                          effective(settings, "cash.discrepancy"))
+    elif card["kind"] == "operator_handoff" and payload.get("kind") == "handoff_offer":
+        if card["status"] == "open":
+            _delivery_clocks(connection, card, record, settings, delivered_at,
+                             ("handoff_escalation",), effective(settings, "operation.handoff"))
     elif payload.get("kind") == "operation":
         if card["status"] == "open" and card["kind"] != "redelivery":
             profile = "operation.order_take" if card["kind"] in {"order_request", "order_delay"} else "operation.take"
@@ -159,6 +163,8 @@ def _target(card, key: str, settings: dict) -> str | None:
     if key in {"cash_review_escalation", "cash_discrepancy_escalation", "cash_question_escalation"}:
         kind = "management" if key == "cash_question_escalation" else "branch"
         return _unique_chat(settings, kind)
+    if key == "handoff_escalation":
+        return _unique_chat(settings, "contact_management")
     if key == "cash_review_due":
         return card["data"]["cash_chat"]
     return card["assignment"]["chat"]

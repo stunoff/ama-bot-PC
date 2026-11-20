@@ -24,6 +24,13 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
     status = f"{card['kind']} · {card['status']} · {card['id']} · v{card['revision']}"
     if payload.get("kind") == "reminder":
         return f"Требуется действие: {status} · {payload['timer']}", None
+    if payload.get("kind") == "handoff_offer":
+        return (f"Передача задачи {card['parent_id']}\n"
+                f"Получатель: {card['assignment']['user']}\n"
+                f"{data['notes']}\n{status}")[:3800], None
+    if payload.get("kind") == "handoff_declined":
+        return (f"Передача задачи {card['parent_id']} отклонена. Причина: {payload['reason']}\n"
+                f"Ответственный: {payload['recipient']}")[:3800], None
     if payload.get("kind") == "first_call":
         pending = ", ".join(payload["guest_orders"])
         return f"Ожидают первого обзвона: {pending}\n{status}"[:3800], None

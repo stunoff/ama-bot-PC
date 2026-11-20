@@ -7,6 +7,7 @@ from sqlalchemy.engine import Connection
 
 from ama_rs.enterprises import Actor, has_role, work_deadlines
 from ama_rs.guest_contact import first_call_keys, guest_timer_keys
+from ama_rs.operator_handoff import cancel_pending_handoff
 from ama_rs.processes import (
     ProcessConflict, ProcessPermissionError, Transition, apply_action, cards,
     create_card, enqueue, get_card, start_timer,
@@ -206,5 +207,6 @@ def close_operation(connection: Connection, card_id: str, command_id: str, revis
     updated = apply_action(connection, card_id, command_id, revision,
         Transition("close_operation", frozenset({"working"}), "closed", frozenset({assigned["role"]})),
         actor, assigned["chat"], assigned["role"], now, updates={"result": result})
+    cancel_pending_handoff(connection, card_id, now)
     finish_request_control(connection, card_id, now)
     return updated

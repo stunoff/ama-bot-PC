@@ -9,6 +9,7 @@ from sqlalchemy.engine import Connection
 from ama_rs import contact_center, operations, personnel, refunds, requests, shifts
 from ama_rs.enterprises import Actor
 from ama_rs.cash_discrepancy import explain_discrepancy, refer_discrepancy
+from ama_rs.operator_handoff import offer_handoff, respond_handoff
 from ama_rs.processes import ProcessConflict
 from ama_rs.refund_control import take_control
 from ama_rs.request_control import accept_request_control
@@ -47,6 +48,8 @@ ACTIONS = {
     "operation.start": contact_center.start_operation,
     "operation.morning": contact_center.submit_morning_operation,
     "operation.take": contact_center.take_operation,
+    "operation.handoff": offer_handoff,
+    "operation.handoff_response": respond_handoff,
     "operation.order_ready": contact_center.mark_order_ready,
     "operation.order_result": contact_center.record_order_result,
     "operation.close": contact_center.close_operation,
