@@ -9,6 +9,7 @@ from sqlalchemy.engine import Connection
 from ama_rs.admin_permissions import ADMIN_ROLES
 from ama_rs.chat_menu import admin_scope, configuration_fields, screen
 from ama_rs.enterprises import Actor, has_role, save_enterprise, validate_settings
+from ama_rs.readiness import readiness_report
 from ama_rs.processes import ProcessPermissionError
 from ama_rs.shifts import route
 from ama_rs.timing import DEFAULTS, effective
@@ -58,10 +59,11 @@ def settings_screen(connection: Connection, actor: Actor, now: datetime, enterpr
     if enterprise_id:
         entry = _entry(connection, actor, now, enterprise_id)
         fields = configuration_fields(entry["settings"], actor, now)
-        return screen(connection, actor, now, _summary(entry, fields), [
-            ("Как изменить", {"text": f"/settings_help {enterprise_id}"}),
-            ("Назад", {"text": "/settings"}),
-        ])
+        links = [("Как изменить", {"text": f"/settings_help {enterprise_id}"}),
+                 ("Назад", {"text": "/settings"})]
+        if "admin_access" in fields:
+            links.insert(0, ("Готовность к запуску", {"text": f"/readiness {enterprise_id}"}))
+        return screen(connection, actor, now, _summary(entry, fields), links)
     allowed = admin_scope(connection, actor, now)
     if not allowed:
         raise ProcessPermissionError("Administration requires the assigned General context")
@@ -70,6 +72,14 @@ def settings_screen(connection: Connection, actor: Actor, now: datetime, enterpr
             entry["settings"], actor, now
         ) else entry["id"])[:60], {"text": f"/settings {entry['id']}"}) for entry in allowed[:20]
     ])
+
+
+def readiness_screen(connection: Connection, actor: Actor, now: datetime, enterprise_id: str):
+    entry = _entry(connection, actor, now, enterprise_id)
+    if "admin_access" not in configuration_fields(entry["settings"], actor, now):
+        raise ProcessPermissionError("Only a full administrator can inspect enterprise-wide readiness")
+    return screen(connection, actor, now, readiness_report(connection, entry, now),
+                  [("Назад", {"text": f"/settings {enterprise_id}"})])
 
 
 def preview(connection: Connection, actor: Actor, now: datetime, arguments: str):

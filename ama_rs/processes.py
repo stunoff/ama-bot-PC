@@ -311,9 +311,11 @@ def claim_delivery(connection: Connection, delivery_id: str, now: datetime):
     # Commit before sending. A process crash leaves an uncertain attempt and
     # requires reconciliation; it must never be blindly retried.
     attempt_id = uuid4().hex
+    identity = {field: chat.get(field) for field in ("platform", "id", "topic_id")}
+    payload = record["payload"] | {"delivery_chat": identity}
     connection.execute(update(deliveries).where(deliveries.c.id == delivery_id)
-        .values(state="uncertain", attempt_id=attempt_id))
-    return dict(record) | {"attempt_id": attempt_id, "chat": chat}
+        .values(state="uncertain", attempt_id=attempt_id, payload=payload))
+    return dict(record) | {"attempt_id": attempt_id, "chat": chat, "payload": payload}
 
 
 def finish_delivery(connection: Connection, delivery_id: str, attempt_id: str,
