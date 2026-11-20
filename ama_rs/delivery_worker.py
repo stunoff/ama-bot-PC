@@ -101,8 +101,13 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
             progress += f"\n{steps[current]['key']} — {steps[current]['title']}"
         problems = sum(item["outcome"] == "problem" for item in data["results"].values())
         return f"{status}\n{progress}\nПроблемы: {problems}", None
+    if payload.get("kind") == "refund_guest":
+        outcome = "Возврат подтверждён платёжным сервисом" if data["outcome"] == "executed" else "Возврат не требуется"
+        return (f"Сообщите гостю результат · {outcome}\n"
+                f"Онлайн-возврат: {card['parent_id']}\n{status}"), None
     if payload.get("kind") in {"financial_status", "financial_result"}:
-        return f"{status}\nСумма: {data.get('requested_kopecks', 0) / 100:.2f} ₽", None
+        source = f"\nИсходное обращение: {payload['source_card']}" if payload.get("source_card") else ""
+        return f"{status}\nСумма: {data.get('requested_kopecks', 0) / 100:.2f} ₽{source}", None
     detail = data.get("title") or data.get("description") or payload.get("question") or payload.get("answer")
     if card["kind"] == "technical" and record["chat"]["kind"] in {"technical", "vipart"}:
         detail = f"{detail}\nСервер: {data['server_address']}\nЛМ: {data['lm_address']}"

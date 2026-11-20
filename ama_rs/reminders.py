@@ -10,6 +10,7 @@ from sqlalchemy.engine import Connection
 from ama_rs.enterprises import chat_is_open, get_enterprise, work_deadlines
 from ama_rs.guest_contact import first_call_followup, pending_first_calls, pending_guest_orders
 from ama_rs.processes import cards, deliveries, elapse_timer, enqueue, get_card, start_timer, timers, utc_value
+from ama_rs.refund_guest import KIND as REFUND_GUEST, escalation_chat
 from ama_rs.refund_control import REFUND_DONE, move_to_final, open_control
 from ama_rs.request_control import advance_request_control, open_request_control
 from ama_rs.timing import effective
@@ -23,6 +24,7 @@ TIMER_RANK = {
     "review_reminder": 1, "review_overdue": 2, "review_escalation": 3,
     "operation_take_reminder": 1, "operation_take_escalation": 3,
     "operation_work_reminder": 1, "operation_work_repeat": 2, "operation_work_escalation": 3,
+    "refund_guest_reminder": 1, "refund_guest_escalation": 2,
     "sales_first": 1, "sales_second": 2, "sales_escalation": 3,
     "cash_question_first": 1, "cash_question_second": 2, "cash_question_escalation": 3,
     "cash_review_due": 1, "cash_review_escalation": 3,
@@ -90,6 +92,11 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
         _delivery_clocks(connection, card, record, settings, delivered_at,
                          ("cash_discrepancy_due", "cash_discrepancy_escalation"),
                          effective(settings, "cash.discrepancy"))
+    elif card["kind"] == REFUND_GUEST and payload.get("kind") == REFUND_GUEST:
+        if card["status"] == "working" and not card["data"].get("guest_contact"):
+            _delivery_clocks(connection, card, record, settings, delivered_at,
+                             ("refund_guest_reminder", "refund_guest_escalation"),
+                             effective(settings, "refund.guest_notification"))
     elif payload.get("kind") == "sales_explanation":
         if card["status"] in {"open", "clarification"} and payload.get("card_revision") == card["revision"]:
             _delivery_clocks(connection, card, record, settings, delivered_at,
@@ -307,7 +314,7 @@ def queue_due_reminders(connection: Connection, now: datetime) -> None:
                 due = datetime.fromisoformat(card["data"]["next_due"])
                 for followup in work_deadlines(settings, card["assignment"]["chat"], due, (10,)):
                     start_timer(connection, card_id, "request_control_advance", due, followup - due)
-            target = _target(card, key, settings)
+            target = escalation_chat(connection, card) if key == "refund_guest_escalation" else _target(card, key, settings)
             payload = {"kind": "reminder", "timer": key, "card_revision": card["revision"]}
             if key in {"operation_take_escalation", "operation_work_escalation"}:
                 payload["operation_follow_up"] = "take" if key == "operation_take_escalation" else "work"

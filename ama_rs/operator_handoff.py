@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
 from ama_rs.enterprises import Actor, get_enterprise, has_role
+from ama_rs.refund_guest import GUEST_CLOCKS, KIND as REFUND_GUEST
 from ama_rs.guest_contact import pending_first_calls, pending_guest_orders
 from ama_rs.processes import (
     ProcessConflict, ProcessPermissionError, Transition, advance_system_card, apply_action,
@@ -71,6 +72,8 @@ def respond_handoff(connection: Connection, card_id: str, command_id: str, revis
                                             assignment=target)
         keys = ("operation_work_reminder", "operation_work_repeat", "operation_work_escalation",
                 "operation_work_control_due")
+        if source["kind"] == REFUND_GUEST:
+            keys += GUEST_CLOCKS
         keys += tuple(pending_guest_orders(source))
         keys += tuple(pending_first_calls(source))
         carry_clocks(connection, source["id"], source["revision"], next_revision, keys)

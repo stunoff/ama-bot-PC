@@ -12,6 +12,7 @@ from ama_rs.processes import (
     ProcessConflict, ProcessPermissionError, Transition, apply_action, attach, attachments,
     cards, create_card, enqueue, get_card, utc_value,
 )
+from ama_rs.refund_guest import KIND as REFUND_GUEST
 from ama_rs.requests import settings_for
 from ama_rs.shifts import route
 
@@ -123,7 +124,7 @@ def move_shift(connection: Connection, card_id: str, command_id: str, revision: 
 
 def outstanding(connection: Connection, card) -> list[str]:
     records = connection.execute(select(cards.c.id, cards.c.assignment).where(
-        cards.c.enterprise_id == card["enterprise_id"], cards.c.kind.in_(OPERATIONS),
+        cards.c.enterprise_id == card["enterprise_id"], cards.c.kind.in_(OPERATIONS | {REFUND_GUEST}),
         cards.c.status == "working"
     )).mappings()
     return [record["id"] for record in records if record["assignment"] == card["assignment"]]

@@ -5,6 +5,7 @@ DEFAULTS = {
     "technical.high": (10, 20, 30),
     "technical.critical": (5, 10, 15),
     "technical.vipart": (5, 15, 25),
+    "refund.guest_notification": (5, 10),
     "refund.execution": (30, 60, 720, 1440),
     "refund.control.branch": (10, 20, 40),
     "refund.control.final": (10, 20),

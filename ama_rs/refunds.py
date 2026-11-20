@@ -11,6 +11,7 @@ from ama_rs.processes import (
     ProcessConflict, ProcessPermissionError, Transition, apply_action, cards,
     create_card, enqueue, get_card, start_timer,
 )
+from ama_rs.refund_guest import publish_result
 from ama_rs.refund_control import control_routes, finish_control
 from ama_rs.requests import _validate_recipient, settings_for
 from ama_rs.shifts import route
@@ -129,8 +130,7 @@ def record_refund_result(connection: Connection, card_id: str, command_id: str, 
         actor, worker["chat"], "finance_executor", now, updates={"financial_reference": reference})
     if outcome != "uncertain":
         finish_control(connection, card_id, now)
-        enqueue(connection, card_id, "financial-result", card["data"]["requester"]["chat"],
-                {"kind": "financial_result", "outcome": outcome}, now)
+        publish_result(connection, card, outcome, now)
     return new_revision
 
 

@@ -318,6 +318,10 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
                             if row["status"] == "review" and len(links) < 10:
                                 links.append((f"Создать поручение · {row['id'][:8]}",
                                               {"text": f"/sales_task_help {row['id']}"}))
+                        if row["kind"] == "refund_guest" and row["status"] == "working":
+                            fields = {"card_id": row["id"], "revision": row["revision"], "outcome": "informed", "note": ""}
+                            links.append(("Результат сообщён гостю · " + row["id"][:8],
+                                          {"text": "/workflow refund.guest_contact " + json.dumps(fields)}))
                         if row["kind"] == "operator_shift":
                             links.append(("Смена оператора", {"text": f"/operator_shift {row['id']}"}))
                         if row["status"] == "open" and row["kind"] == "operator_handoff":
