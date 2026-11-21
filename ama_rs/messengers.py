@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import dataclass
+from uuid import uuid4
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -17,11 +18,41 @@ class NoRedirect(HTTPRedirectHandler):
 def _post(url: str, body: dict, headers: dict | None = None, *, method: str = "POST") -> dict:
     request = Request(url, data=json.dumps(body, ensure_ascii=False).encode(), method=method,
                       headers={"Content-Type": "application/json"} | (headers or {}))
+    return _read_response(request)
+
+
+def _read_response(request: Request) -> dict:
     with build_opener(NoRedirect()).open(request, timeout=10) as response:
         result = json.load(response)
     if result.get("ok") is False:
         raise RuntimeError("Messenger did not confirm the request")
     return result
+
+
+@dataclass(frozen=True)
+class Document:
+    filename: str
+    data: bytes
+
+
+def send_document(token: str, chat: dict, document: Document) -> None:
+    boundary = uuid4().hex
+    while boundary.encode() in document.data:
+        boundary = uuid4().hex
+    fields = {"chat_id": str(chat["id"])}
+    if chat.get("topic_id") not in (None, "1"):
+        fields["message_thread_id"] = str(int(chat["topic_id"]))
+    chunks = []
+    for name, value in fields.items():
+        chunks.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+    chunks += [
+        (f'--{boundary}\r\nContent-Disposition: form-data; name="document"; '
+         f'filename="{document.filename}"\r\nContent-Type: text/csv\r\n\r\n').encode(),
+        document.data, f"\r\n--{boundary}--\r\n".encode(),
+    ]
+    _read_response(Request(f"https://api.telegram.org/bot{token}/sendDocument",
+        data=b"".join(chunks), method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}))
 
 
 @dataclass(frozen=True)

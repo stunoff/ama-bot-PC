@@ -19,11 +19,11 @@ from ama_rs.chat_menu import Screen, consume, menu, screen
 from ama_rs.contact_center import OPERATIONS, take_operation
 from ama_rs.enterprise_wizard import create_enterprise, registration_screen
 from ama_rs.enterprises import Actor, enterprises, get_enterprise, has_role
-from ama_rs.messengers import Message
+from ama_rs.messengers import Document, Message
 from ama_rs.operator_shift import CHECKS, shift_card
 from ama_rs.personnel import claim_invite, people, record_work_time, synchronize_person
 from ama_rs.processes import ProcessConflict, ProcessPermissionError, cards, create_card, enqueue, get_card, utc_value
-from ama_rs.refund_report import refund_report
+from ama_rs.refund_report import refund_csv, refund_report
 from ama_rs.refunds import take_refund
 from ama_rs.route_probe import confirm_probe, start_probe
 from ama_rs.reports import accessible_summaries, format_summary, import_coverage, import_order
@@ -70,11 +70,11 @@ def _scope(settings: dict, actor: Actor, now: datetime) -> list[str]:
 
 COMMANDS = {
     "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result",
-    "/step", "/photo", "/accounting", "/checklist", "/cash_menu", "/operator_shift", "/report", "/refund_report", "/sales_task_help", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help", "/readiness", "/route_tests", "/route_confirm", "/checklist_setup", "/enterprise_new", "/scenarios",
+    "/step", "/photo", "/accounting", "/checklist", "/cash_menu", "/operator_shift", "/report", "/refund_report", "/refund_export", "/sales_task_help", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help", "/readiness", "/route_tests", "/route_confirm", "/checklist_setup", "/enterprise_new", "/scenarios",
 }
 
 
-def run_bot_command(connection: Connection, message: Message, now: datetime) -> str | Screen | None:
+def run_bot_command(connection: Connection, message: Message, now: datetime) -> str | Screen | Document | None:
     """Handle supported commands using the authenticated messenger actor."""
     text = message.text.strip()
     if not message.callback_id and text.partition(" ")[0].split("@", 1)[0].lower() not in COMMANDS:
@@ -144,7 +144,7 @@ def _checklist_screen(connection: Connection, card_id: str, actor: Actor, now: d
 
 
 def _dispatch(connection: Connection, command: str, arguments: str, command_id: str,
-              actor: Actor, now: datetime, file_id: str | None) -> str | Screen:
+              actor: Actor, now: datetime, file_id: str | None) -> str | Screen | Document:
     if command == "/accounting":
         item = read_correction(connection, arguments.strip(), actor, now)
         return (f"Исправление учёта · {item['status']} · версия {item['revision']}\n"
@@ -198,13 +198,21 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
         return "Укажите задачу, ожидаемый результат, срок и получателя.\n/workflow sales.task " + json.dumps(
             form, ensure_ascii=False
         )
-    if command == "/refund_report":
+    if command in {"/refund_report", "/refund_export"}:
+        if command == "/refund_export" and actor.platform != "telegram":
+            return "Выгрузка CSV доступна в Telegram. Здесь используйте /refund_report."
         if not arguments:
-            return ("/refund_report YYYY-MM-DD YYYY-MM-DD {фильтры}\n"
+            return (f"{command} YYYY-MM-DD YYYY-MM-DD {{фильтры}}\n"
                     "Фильтры: enterprise, brand, reason, requester, executor, status, request.")
         start, finish, *raw = arguments.split(maxsplit=2)
         filters = json.loads(raw[0]) if raw else {}
-        return refund_report(connection, actor, now, date.fromisoformat(start), date.fromisoformat(finish), filters)
+        begin, until = date.fromisoformat(start), date.fromisoformat(finish)
+        if command == "/refund_export":
+            data = refund_csv(connection, actor, now, begin, until, filters)
+            if len(data) > 50_000_000:
+                return "Файл превышает ограничение Telegram. Выберите более узкий период."
+            return Document(f"refunds-{begin}-{until}.csv", data)
+        return refund_report(connection, actor, now, begin, until, filters)
     if command == "/report":
         start, end = (date.fromisoformat(value) for value in arguments.split())
         reports = accessible_summaries(connection, actor, now, start, end)

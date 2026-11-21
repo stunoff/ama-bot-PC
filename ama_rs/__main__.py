@@ -8,7 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from ama_rs.chat_menu import Screen
 from ama_rs.db import create_database_engine
 from ama_rs.integrations import ingest_iiko, run_bot_command, valid_signature
-from ama_rs.messengers import acknowledge_callback, normalize, send_message
+from ama_rs.messengers import Document, acknowledge_callback, normalize, send_document, send_message
 from ama_rs.processes import ProcessConflict
 
 WEBHOOKS = {
@@ -75,11 +75,13 @@ def main() -> None:
                     token = os.environ.get(f"{source.upper()}_BOT_TOKEN")
                     if response and token:
                         actor = message.actor
-                        send_message(source, token, {
-                            "id": actor.chat_id, "topic_id": actor.topic_id,
-                            "kind": "personal" if actor.chat_id == actor.user_id else "group",
-                        }, response.text if isinstance(response, Screen) else response,
-                            buttons=response.buttons if isinstance(response, Screen) else ())
+                        chat = {"id": actor.chat_id, "topic_id": actor.topic_id,
+                                "kind": "personal" if actor.chat_id == actor.user_id else "group"}
+                        if isinstance(response, Document):
+                            send_document(token, chat, response)
+                        else:
+                            send_message(source, token, chat, response.text if isinstance(response, Screen) else response,
+                                         buttons=response.buttons if isinstance(response, Screen) else ())
                     if message.callback_id and token:
                         acknowledge_callback(source, token, message.callback_id)
             except ProcessConflict:

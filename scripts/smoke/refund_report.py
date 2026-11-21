@@ -1,9 +1,12 @@
+import csv
+import io
+from unittest.mock import patch
 from datetime import UTC, datetime, timedelta
 
 from ama_rs.db import create_database_engine
 from ama_rs.enterprises import Actor, save_enterprise
 from ama_rs.integrations import run_bot_command
-from ama_rs.messengers import Message
+from ama_rs.messengers import Document, Message, send_document
 from ama_rs.refunds import record_refund_result, request_refund, reserve_refund, take_refund
 
 now = datetime(2026, 11, 23, 8, tzinfo=UTC)
@@ -59,5 +62,26 @@ with create_database_engine().begin() as conn:
     expanded = show("details", branch, '{"request":"' + refund_ids[0] + '"}')
     assert f"Карточка: {refund_ids[0]}" in expanded and "Бренд: One" in expanded
     assert "payment-1" not in expanded and "trace" not in expanded
+    export = "/refund_export 2026-11-23 2026-11-24"
+    document = run_bot_command(conn, Message("csv", executor, export), now)
+    assert isinstance(document, Document)
+    rows = list(csv.DictReader(io.StringIO(document.data.decode("utf-8-sig"))))
+    assert len(rows) == 3
+    assert sum(int(row["counted_kopecks"] or 0) for row in rows) == 900
+    assert {row["confirmation_status"] for row in rows} == {"confirmed", "duplicate", ""}
+    assert "payment-1" not in document.data.decode() and "trace" not in document.data.decode()
+    assert "недоступно" in run_bot_command(conn, Message("csv-deny", manager, export), now)
+    matching = run_bot_command(conn, Message("csv-filter", branch, export + ' {"brand":"Two"}'), now)
+    selected = list(csv.DictReader(io.StringIO(matching.data.decode("utf-8-sig"))))
+    assert len(selected) == 1 and selected[0]["brand"] == "Two"
+    dangerous = request_refund(conn, enterprise_id, "fourth", "Two", "Order", "  =1+1", 100, employee, now)
+    safe = run_bot_command(conn, Message("csv-safe", branch, export + ' {"request":"' + dangerous["id"] + '"}'), now)
+    assert list(csv.DictReader(io.StringIO(safe.data.decode("utf-8-sig"))))[0]["reason"] == "'  =1+1"
+    with patch("ama_rs.messengers._read_response") as send:
+        send_document("local-fixture", {"id": "-10042", "topic_id": "10"}, document)
+        request = send.call_args.args[0]
+        assert request.full_url.endswith("/sendDocument")
+        assert b'name="message_thread_id"\r\n\r\n10' in request.data
+        assert document.data in request.data
     conn.rollback()
-print("Refund report scope, filters, verified totals, duplicate confirmations and detail access verified")
+print("Refund report scope, filters, verified totals, duplicate confirmations CSV export and detail access verified")

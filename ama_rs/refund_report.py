@@ -1,6 +1,10 @@
 """Scoped financial reporting for online refunds."""
 
+import csv
+import io
 from collections import Counter
+from datetime import UTC
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 from datetime import date, datetime, timedelta
 
@@ -35,8 +39,8 @@ def _matches(record, filters: dict) -> bool:
     return all(actual[key] == value for key, value in filters.items())
 
 
-def refund_report(connection: Connection, actor: Actor, now: datetime, begin: date,
-                  until: date, filters: dict) -> str:
+def _refund_rows(connection: Connection, actor: Actor, now: datetime, begin: date,
+                 until: date, filters: dict):
     if not isinstance(filters, dict) or filters.keys() - FILTERS or any(
         not isinstance(value, str) or not value.strip() for value in filters.values()
     ):
@@ -52,27 +56,40 @@ def refund_report(connection: Connection, actor: Actor, now: datetime, begin: da
             eligible.append((entry, scope))
     if not eligible:
         raise ProcessPermissionError("Refund reporting is outside the actor's scope")
-    output = [f"Онлайн-возвраты · {begin} — {until - timedelta(days=1)}"]
     for entry, scope in eligible:
         settings = entry["settings"]
         start, end = _period(begin, until, settings["timezone"])
         query = select(cards).where(
             cards.c.enterprise_id == entry["id"], cards.c.kind == "refund",
             cards.c.created_at >= start, cards.c.created_at < end,
-        )
+        ).order_by(cards.c.created_at, cards.c.id)
         management = any(settings["chats"][key]["kind"] != "refunds" for key in scope)
         records = [row for row in connection.execute(query).mappings()
                    if _matches(row, filters) and (management or row["data"]["worker"]["chat"] in scope)]
+        yield settings, records
+
+
+def _confirmation_key(record):
+    data = record["data"]
+    key = (data.get("payment_reference"), data.get("financial_reference"))
+    return key if all(key) else record["id"]
+
+
+def _confirmation_amounts(records):
+    amounts = {}
+    for row in records:
+        if row["status"] == "executed":
+            amounts.setdefault(_confirmation_key(row), set()).add(confirmed_amount(row["data"]))
+    return amounts
+
+
+def refund_report(connection: Connection, actor: Actor, now: datetime, begin: date,
+                  until: date, filters: dict) -> str:
+    output = [f"Онлайн-возвраты · {begin} — {until - timedelta(days=1)}"]
+    for settings, records in _refund_rows(connection, actor, now, begin, until, filters):
         states = Counter(row["status"] for row in records)
         amounts = sum(row["data"]["requested_kopecks"] for row in records)
-        confirmations = {}
-        for row in records:
-            if row["status"] != "executed":
-                continue
-            data = row["data"]
-            reference = (data.get("payment_reference"), data.get("financial_reference"))
-            key = reference if all(reference) else row["id"]
-            confirmations.setdefault(key, set()).add(confirmed_amount(data))
+        confirmations = _confirmation_amounts(records)
         executed = sum(next(iter(values)) for values in confirmations.values() if len(values) == 1)
         conflicts = sum(len(values) > 1 for values in confirmations.values())
         partial = sum(bool(row["data"].get("positions")) for row in records)
@@ -116,3 +133,45 @@ def refund_report(connection: Connection, actor: Actor, now: datetime, begin: da
                       "executed": "Выполнены", "not_required": "Возврат не требуется"}
             output.append(", ".join(f"{labels.get(state, state)}: {amount}" for state, amount in sorted(states.items())))
     return "\n".join(output)[:3800]
+
+
+def _csv_text(value: str | None) -> str:
+    text = value or ""
+    if text.startswith(("\t", "\r", "\n")) or text.lstrip().startswith(("=", "+", "-", "@")):
+        return "'" + text
+    return text
+
+
+def refund_csv(connection: Connection, actor: Actor, now: datetime, begin: date,
+               until: date, filters: dict) -> bytes:
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer)
+    writer.writerow(("enterprise_id", "request_id", "created_at", "brand", "reason",
+                     "requester", "executor", "status", "partial", "requested_kopecks",
+                     "confirmed_kopecks", "counted_kopecks", "confirmation_status"))
+    for settings, records in _refund_rows(connection, actor, now, begin, until, filters):
+        amounts = _confirmation_amounts(records)
+        credited = set()
+        zone = ZoneInfo(settings["timezone"])
+        for row in records:
+            data = row["data"]
+            paid = counted = ""
+            confirmation = ""
+            if row["status"] == "executed":
+                key = _confirmation_key(row)
+                paid = confirmed_amount(data)
+                if len(amounts[key]) > 1:
+                    confirmation = "conflict"
+                elif key in credited:
+                    confirmation = "duplicate"
+                else:
+                    counted = paid
+                    credited.add(key)
+                    confirmation = "confirmed"
+            writer.writerow((_csv_text(row["enterprise_id"]), row["id"],
+                             row["created_at"].replace(tzinfo=UTC).astimezone(zone).isoformat(),
+                             _csv_text(data["brand"]), _csv_text(data["reason"]),
+                             "enterprise" if data["requester"]["role"] == "service_account" else "operator",
+                             _csv_text(data["worker"].get("user")), row["status"], int(bool(data.get("positions"))),
+                             data["requested_kopecks"], paid, counted, confirmation))
+    return buffer.getvalue().encode("utf-8-sig")
