@@ -1,7 +1,12 @@
+from contextlib import nullcontext
 from datetime import UTC, date, datetime
+from io import BytesIO
+from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 
 from sqlalchemy import func, select
 from ama_rs.db import create_database_engine
+from ama_rs.delivery_worker import _send_delivery
 from ama_rs.enterprises import Actor, save_enterprise
 from ama_rs.integrations import ingest_iiko, run_bot_command
 from ama_rs.messengers import Message
@@ -102,6 +107,32 @@ with create_database_engine().begin() as conn:
     claimed_edit = claim_delivery(conn, edit["id"], now)
     assert claimed_edit["payload"]["edit"] == "42"
     assert claimed_edit["payload"]["expected_chat"]["id"] == "42"
+    engine = Mock()
+    engine.begin.side_effect = lambda: nullcontext(conn)
+    edit_error = HTTPError("https://fixture.invalid", 400, "Bad Request", {},
+                           BytesIO(b'{"description":"Bad Request: message can not be edited"}'))
+    with (patch("ama_rs.delivery_worker.edit_message", side_effect=edit_error),
+          patch("ama_rs.delivery_worker.send_message") as send):
+        assert _send_delivery(engine, claimed_edit, "fixture", "Обновлённый отчёт", None, now) is None
+        send.assert_not_called()
+    fallback = claim_delivery(conn, edit["id"], now)
+    assert "edit" not in fallback["payload"] and fallback["payload"]["replaces_report"] == "42"
+    with patch("ama_rs.messengers._post", return_value={"result": {"message_id": 84}}) as post:
+        assert _send_delivery(engine, fallback, "fixture", "Обновлённый отчёт", None, now) == "84"
+        request = post.call_args.args[1]
+        assert request["reply_parameters"] == {"message_id": 42, "allow_sending_without_reply": True}
+        assert "Корректировка отчёта" in request["text"]
+    assert finish_delivery(conn, edit["id"], fallback["attempt_id"], external_id="84")
+    assert claim_delivery(conn, edit["id"], now) is None
+    latest = correction | {"id": "later-correction", "data": correction["data"] | {
+        "handed_at": "2026-11-23T15:40+03:00", "updated_at": "2026-11-24T18:01+03:00",
+    }}
+    assert ingest_iiko(conn, latest, now)
+    next_edit = conn.execute(select(deliveries).where(
+        deliveries.c.card_id == attempt["card_id"], deliveries.c.state == "pending",
+    )).mappings().one()
+    assert next_edit["payload"]["edit"] == "84"
+
     def confirm(event, local_time, minutes, actor=Actor("telegram", "8", "43")):
         text = ('/workflow operation.confirm_targets {"enterprise_id":"report-test",'
                 f'"reason":"Перегрузка кухни","delivery_increment":{minutes}' + "}")

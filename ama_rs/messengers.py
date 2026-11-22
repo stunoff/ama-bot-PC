@@ -150,11 +150,14 @@ def normalize(platform: str, payload: dict) -> Message | None:
 
 
 def send_message(platform: str, token: str, chat: dict, text: str, *, quiet: bool = False,
-                 photo: str | None = None, buttons: tuple[tuple[str, str], ...] = ()) -> str:
+                 photo: str | None = None, buttons: tuple[tuple[str, str], ...] = (),
+                 reply_to: str | None = None) -> str:
     if platform == "telegram":
         body = {"chat_id": chat["id"], "disable_notification": quiet}
         if chat.get("topic_id") not in (None, "1"):
             body["message_thread_id"] = int(chat["topic_id"])
+        if reply_to:
+            body["reply_parameters"] = {"message_id": int(reply_to), "allow_sending_without_reply": True}
         if buttons:
             body["reply_markup"] = {"inline_keyboard": [
                 [{"text": label, "callback_data": key}] for label, key in buttons
@@ -165,6 +168,8 @@ def send_message(platform: str, token: str, chat: dict, text: str, *, quiet: boo
     if platform == "max":
         query = _max_destination(chat)
         body = {"text": text, "notify": not quiet}
+        if reply_to:
+            body["link"] = {"type": "reply", "mid": reply_to}
         attachments = []
         if photo:
             attachments.append({"type": "image", "payload": {"token": photo}})
@@ -177,6 +182,42 @@ def send_message(platform: str, token: str, chat: dict, text: str, *, quiet: boo
         return str(_post(f"https://platform-api.max.ru/messages?{query}",
                          body, {"Authorization": token})["message"]["body"]["mid"])
     raise ValueError("Unsupported messenger")
+
+
+def report_edit_failure(platform: str, error: HTTPError) -> str | None:
+    if error.code not in {400, 403, 404}:
+        return None
+    try:
+        result = json.load(error)
+    except (OSError, ValueError):
+        return "missing" if platform == "max" and error.code == 404 else None
+    if not isinstance(result, dict):
+        return None
+    if platform == "telegram":
+        description = str(result.get("description", "")).lower().replace("’", "'")
+        if "message is not modified" in description:
+            return "unchanged"
+        if "message to edit not found" in description:
+            return "missing"
+        if "message can't be edited" in description or "message can not be edited" in description:
+            return "forbidden"
+    if platform == "max":
+        code = result.get("code")
+        if error.code == 404 or code == "message.not.found":
+            return "missing"
+        if code in {"message.not.modified", "message.not.changed"}:
+            return "unchanged"
+        if code in {"message.edit.forbidden", "message.cannot.edit", "message.not.editable"}:
+            return "forbidden"
+    return None
+
+
+def report_correction_reference(chat: dict, message_id: str) -> str:
+    chat_id = str(chat["id"])
+    if (chat["platform"] == "telegram" and chat_id.startswith("-100")
+            and chat_id[4:].isascii() and chat_id[4:].isdigit() and message_id.isascii() and message_id.isdigit()):
+        return f"https://t.me/c/{chat_id[4:]}/{message_id}"
+    return f"сообщение {message_id}"
 
 
 def definitely_rejected(error: HTTPError) -> bool:

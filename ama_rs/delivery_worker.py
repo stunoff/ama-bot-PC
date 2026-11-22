@@ -12,7 +12,9 @@ from ama_rs.accounting_correction import check_reserves, switch_to_reserve
 from ama_rs.attendance import scan_attendance
 from ama_rs.chat_menu import buttons
 from ama_rs.db import create_database_engine
-from ama_rs.messengers import definitely_rejected, edit_message, send_message
+from ama_rs.messengers import (
+    definitely_rejected, edit_message, report_correction_reference, report_edit_failure, send_message,
+)
 from ama_rs.processes import attachments, claim_delivery, deliveries, finish_delivery, get_card, utc_value
 from ama_rs.operator_shift import outstanding
 from ama_rs.refunds import confirmed_amount
@@ -138,6 +140,39 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
     return (f"{status}\n{detail}" if detail else status)[:3800], None
 
 
+def _send_delivery(engine, record: dict, token: str, text: str, photo: str | None, now: datetime) -> str | None:
+    chat, payload = record["chat"], record["payload"]
+    platform = chat["platform"]
+    if message_id := payload.get("edit"):
+        try:
+            return edit_message(platform, token, chat, message_id, text)
+        except HTTPError as error:
+            if not record["signal"].startswith("report-edit:"):
+                raise
+            failure = report_edit_failure(platform, error)
+            if failure == "unchanged":
+                return message_id
+            if failure not in {"forbidden", "missing"}:
+                raise
+            replacement = dict(payload)
+            replacement.pop("edit")
+            replacement["replaces_report"] = message_id
+            if failure == "forbidden" or platform == "telegram":
+                replacement["reply_to"] = message_id
+            # Persist the change of operation before any new message can be sent.
+            with engine.begin() as connection:
+                connection.execute(update(deliveries).where(
+                    deliveries.c.id == record["id"], deliveries.c.attempt_id == record["attempt_id"],
+                    deliveries.c.state == "uncertain",
+                ).values(payload=replacement, state="pending", attempt_id=None, available_at=utc_value(now)))
+            return None
+    if original := payload.get("replaces_report"):
+        reference = report_correction_reference(chat, original)
+        text = f"Корректировка отчёта · исходное сообщение: {reference}\n{text}"[:4000]
+    return send_message(platform, token, chat, text, quiet=payload.get("kind") == "attachment",
+                        photo=photo, reply_to=payload.get("reply_to"))
+
+
 def deliver_batch(engine, now: datetime) -> None:
     with engine.connect() as connection:
         ids = connection.execute(select(deliveries.c.id).where(
@@ -161,11 +196,9 @@ def deliver_batch(engine, now: datetime) -> None:
             rendered_revision = get_card(connection, record["card_id"])["revision"]
             text, photo = _message(connection, record)
         try:
-            if message_id := record["payload"].get("edit"):
-                external_id = edit_message(platform, token, record["chat"], message_id, text)
-            else:
-                external_id = send_message(platform, token, record["chat"], text,
-                                           quiet=record["payload"].get("kind") == "attachment", photo=photo)
+            external_id = _send_delivery(engine, record, token, text, photo, now)
+            if external_id is None:
+                continue
         except HTTPError as error:
             with engine.begin() as connection:
                 if error.code == 429:
@@ -194,7 +227,8 @@ def deliver_batch(engine, now: datetime) -> None:
                     after_delivery(connection, record, delivered_at)
                     if record["signal"] == "management-card" and card["revision"] != rendered_revision:
                         refresh_management_card(connection, card, card["revision"], delivered_at)
-                    if record["signal"] == "report" and card["revision"] != rendered_revision:
+                    if (record["payload"].get("kind") == "report"
+                            and card["revision"] != rendered_revision):
                         queue_report_edit(connection, card, card["revision"], delivered_at)
 
 

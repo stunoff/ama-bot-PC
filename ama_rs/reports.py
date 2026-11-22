@@ -338,15 +338,16 @@ def refresh_reports(connection: Connection, enterprise_id: str, now: datetime, s
 
 def queue_report_edit(connection: Connection, card, revision: int, now: datetime) -> None:
     chat = card["assignment"]["chat"]
-    original = connection.execute(select(deliveries).where(
+    previous = connection.execute(select(deliveries).where(
         deliveries.c.card_id == card["id"], deliveries.c.chat_key == chat,
-        deliveries.c.signal == "report", deliveries.c.state == "sent",
-    )).mappings().one_or_none()
-    if original is None or not original["payload"].get("delivery_chat"):
+        or_(deliveries.c.signal == "report", deliveries.c.signal.startswith("report-edit:")),
+        deliveries.c.state == "sent",
+    ).order_by(deliveries.c.payload["card_revision"].as_integer().desc()).limit(1)).mappings().first()
+    if previous is None or not previous["payload"].get("delivery_chat"):
         return
     enqueue(connection, card["id"], f"report-edit:{revision}", chat, {
-        "kind": "report", "edit": original["external_id"],
-        "expected_chat": original["payload"]["delivery_chat"], "card_revision": revision,
+        "kind": "report", "edit": previous["external_id"],
+        "expected_chat": previous["payload"]["delivery_chat"], "card_revision": revision,
     }, now)
 
 
