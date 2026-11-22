@@ -1,6 +1,6 @@
 """Prerequisites for activating automatic enterprise checklists."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.engine import Connection
@@ -50,6 +50,19 @@ def route_issues(connection: Connection, enterprise_id: str, settings: dict, now
         chat = settings["chats"][key]
         if not chat.get("calendar"):
             issues.append(f"{key}: нет рабочего календаря.")
+        if kind == "cash":
+            cutoff = chat.get("cash_accept_by")
+            zone = ZoneInfo(chat.get("timezone", settings["timezone"]))
+            today = now.astimezone(zone).date()
+            if not cutoff:
+                issues.append(f"{key}: настройте срок приёмки кассы через chat_calendar (cash_accept_by).")
+            elif not any(
+                chat_is_open(settings, key,
+                             datetime.combine(today + timedelta(days=offset), time.fromisoformat(cutoff), zone)
+                             - timedelta(microseconds=1))
+                for offset in range(1, 15)
+            ):
+                issues.append(f"{key}: срок приёмки кассы вне рабочего календаря на ближайшие 14 дней.")
         if not any(
             has_role(settings, Actor(chat["platform"], grant["user"], chat["id"], chat.get("topic_id")),
                      key, role, now)

@@ -59,11 +59,17 @@ with create_database_engine().begin() as conn:
         assert finish_delivery(conn, delivery_id, attempt["attempt_id"], external_id=f"fixture-{key}")
         confirm_probe(conn, probe, f"confirm-{key}", Actor("telegram", user, chat_id), now)
 
+    missing_cutoff = command("missing-cutoff", setup)
+    assert "настройте срок приёмки кассы" in missing_cutoff.text
+    assert "недоступно" in command("cutoff-blocked", toggle)
+    cutoff = command("cash-cutoff", '/configure checklist-setup-test chat_calendar '
+                     '{"chat":"cash","calendar":"always","cash_accept_by":"13:00"}')
+    assert "Версия 4" in command("cutoff-save", dict(cutoff.buttons)["Сохранить"], callback=True)
     ready = command("ready", setup)
     prepare = dict(ready.buttons)["Подготовить включение"]
     preview = command("preview", prepare, callback=True)
     assert not get_enterprise(conn, settings["id"])["settings"].get("scheduled_checklists")
-    assert "Версия 4" in command("save", dict(preview.buttons)["Сохранить"], callback=True)
+    assert "Версия 5" in command("save", dict(preview.buttons)["Сохранить"], callback=True)
     query = select(cards.c.id).where(cards.c.enterprise_id == settings["id"],
                                     cards.c.kind == "morning_checklist")
     schedule_checklists(conn, now)
@@ -71,7 +77,7 @@ with create_database_engine().begin() as conn:
 
     current = get_enterprise(conn, settings["id"])["settings"]
     changed = current | {"chats": current["chats"] | {"cash": current["chats"]["cash"] | {"id": "other-cash"}}}
-    save_enterprise(conn, changed, 4, "test")
+    save_enterprise(conn, changed, 5, "test")
     schedule_checklists(conn, now + timedelta(days=1))
     assert conn.scalars(query).all() == [first]
     assert "cash: требуется ответ" in command("changed", setup).text

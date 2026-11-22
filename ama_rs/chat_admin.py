@@ -199,7 +199,10 @@ def preview(connection: Connection, actor: Actor, now: datetime, arguments: str)
     if field == "admin_access":
         previous = _matching_grants(entry["settings"], value)
     if field == "chat_calendar":
-        previous = entry["settings"]["chats"][value["chat"]].get("calendar")
+        chat = entry["settings"]["chats"][value["chat"]]
+        previous = {"calendar": chat.get("calendar")}
+        if "cash_accept_by" in chat:
+            previous["cash_accept_by"] = chat["cash_accept_by"]
     before = json.dumps(previous, ensure_ascii=False)
     after = json.dumps(value, ensure_ascii=False)
     if max(len(before), len(after)) > 500:
@@ -283,7 +286,8 @@ def _change(settings: dict, field: str, value, now: datetime) -> dict:
         raise ValueError("Unexpected shift schedule fields")
     result = deepcopy(settings)
     if field == "chat_calendar":
-        if set(value) != {"chat", "calendar"} or value["chat"] not in result["chats"]:
+        if (not {"chat", "calendar"} <= value.keys() <= {"chat", "calendar", "cash_accept_by"}
+                or value["chat"] not in result["chats"]):
             raise ValueError("Specify the existing chat and its calendar")
         calendar = value["calendar"]
         if isinstance(calendar, list) and any(
@@ -291,7 +295,12 @@ def _change(settings: dict, field: str, value, now: datetime) -> dict:
             for window in calendar
         ):
             raise ValueError("Unexpected calendar fields")
-        result["chats"][value["chat"]]["calendar"] = calendar
+        chat = result["chats"][value["chat"]]
+        chat["calendar"] = calendar
+        if "cash_accept_by" in value:
+            if chat["kind"] != "cash" or not isinstance(value["cash_accept_by"], str):
+                raise ValueError("Specify a cash acceptance cutoff for a cash route")
+            chat["cash_accept_by"] = value["cash_accept_by"]
     elif field == "checklist_route":
         _add_checklist_route(result, value)
     elif field == "admin_access":
