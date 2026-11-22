@@ -7,7 +7,7 @@ from ama_rs.enterprises import Actor, save_enterprise
 from ama_rs.integrations import run_bot_command
 from ama_rs.messengers import Message
 from ama_rs.operator_shift import (
-    ADMINISTRATION, CLOSING, PREPARATION, add_shift_photo, move_shift, plan_shift, record_shift_check,
+    CLOSING, PREPARATION, add_shift_photo, move_shift, plan_shift, record_shift_check, shift_checks,
 )
 from ama_rs.processes import ProcessConflict, deliveries, get_card
 
@@ -17,6 +17,7 @@ operator = Actor("telegram", "1", "work")
 settings = {
     "id": "operator-shift-test", "iiko_id": "operator-shift-test", "name": "Demo", "timezone": "Europe/Moscow",
     "format": "delivery", "server_address": "server.invalid", "lm_address": "lm.invalid",
+    "aggregator_accounts": ["Яндекс Еда", "Купер"],
     "contact_mode": "central", "final_route": "headquarters", "brands": ["Demo"],
     "chats": {
         "management": {"kind": "contact_management", "platform": "telegram", "id": "manager", "calendar": "always"},
@@ -57,7 +58,13 @@ with create_database_engine().begin() as conn:
     assert current["data"]["started_at"] == actual_start.isoformat()
     revision = move_shift(conn, shift, "continue", revision, "continue", operator, actual_start,
                           late_reason="Headset replaced")
-    for item, (_, needs_photo) in ADMINISTRATION.items():
+    checks = shift_checks(get_card(conn, shift))
+    assert list(checks)[1:3] == ["aggregator_1", "aggregator_2"]
+    assert checks["aggregator_2"] == ("Кабинет агрегатора · Купер", True)
+    revised_settings = settings | {"aggregator_accounts": []}
+    save_enterprise(conn, revised_settings, 1, "test")
+    assert shift_checks(get_card(conn, shift)) == checks
+    for item, (_, needs_photo) in checks.items():
         if needs_photo:
             add_shift_photo(conn, shift, f"photo:{item}", item, "test-photo", operator, actual_start)
         revision = record_shift_check(conn, shift, f"done:{item}", revision, item, operator, actual_start)

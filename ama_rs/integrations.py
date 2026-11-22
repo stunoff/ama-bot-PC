@@ -20,7 +20,7 @@ from ama_rs.contact_center import OPERATIONS, take_operation
 from ama_rs.enterprise_wizard import create_enterprise, registration_screen
 from ama_rs.enterprises import Actor, enterprises, get_enterprise, has_role
 from ama_rs.messengers import Document, Message
-from ama_rs.operator_shift import CHECKS, shift_card
+from ama_rs.operator_shift import shift_card, shift_checks
 from ama_rs.personnel import claim_invite, people, record_work_time, synchronize_person
 from ama_rs.processes import ProcessConflict, ProcessPermissionError, cards, create_card, enqueue, get_card, utc_value
 from ama_rs.refund_report import refund_csv, refund_report
@@ -240,11 +240,12 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
         complete = card["data"]["results"]
         links = []
         text = f"Смена оператора · {status}"
-        if status in CHECKS:
-            remaining = [key for key in CHECKS[status] if key not in complete]
+        checks = shift_checks(card)
+        if checks:
+            remaining = [key for key in checks if key not in complete]
             if remaining:
                 item = next((key for key in remaining if key not in card["data"]["issues"]), remaining[0])
-                title, photo = CHECKS[status][item]
+                title, photo = checks[item]
                 choice = "/workflow operator_shift.check " + json.dumps(fields | {"item": item})
                 text += f"\n{title}"
                 if photo:

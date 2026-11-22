@@ -273,7 +273,7 @@ def _add_checklist_route(settings: dict, value: dict) -> None:
 
 def _change(settings: dict, field: str, value, now: datetime) -> dict:
     expected = {"scheduled_reports": bool, "scheduled_checklists": bool, "attendance_monitoring": bool,
-                "facilities": list, "writeoff_reasons": list, "shift_schedule": dict, "timing_overrides": dict,
+                "facilities": list, "writeoff_reasons": list, "aggregator_accounts": list, "shift_schedule": dict, "timing_overrides": dict,
                 "chat_calendar": dict, "admin_access": dict, "checklist_route": dict}.get(field, str)
     if type(value) is not expected:
         raise ValueError("Invalid setting value")

@@ -42,6 +42,19 @@ CLOSING = {
 CHECKS = {"preparing": PREPARATION, "administration": ADMINISTRATION, "closing": CLOSING}
 
 
+def shift_checks(card) -> dict[str, tuple[str, bool]]:
+    stage = card["status"]
+    accounts = card["data"].get("aggregator_accounts")
+    if stage != "administration" or accounts is None:
+        return CHECKS.get(stage, {})
+    return {
+        "sellkit_admin": ADMINISTRATION["sellkit_admin"],
+        **{f"aggregator_{index}": (f"Кабинет агрегатора · {name}", True)
+           for index, name in enumerate(accounts, start=1)},
+        **{key: check for key, check in ADMINISTRATION.items() if key not in {"sellkit_admin", "aggregators"}},
+    }
+
+
 def plan_shift(connection: Connection, enterprise_id: str, recipient_id: str, planned_start: datetime,
                planned_end: datetime, actor: Actor, now: datetime) -> str:
     settings = settings_for(connection, enterprise_id)
@@ -102,6 +115,8 @@ def move_shift(connection: Connection, card_id: str, command_id: str, revision: 
     updates = {}
     if action == "open":
         updates["prepared_at"] = now.isoformat()
+    if action == "continue":
+        updates["aggregator_accounts"] = settings_for(connection, card["enterprise_id"]).get("aggregator_accounts", [])
     if action == "continue" and card["data"].get("late_seconds"):
         reason = card["data"].get("late_reason") or late_reason.strip()
         if not reason:
@@ -136,11 +151,15 @@ def record_shift_check(connection: Connection, card_id: str, command_id: str, re
     get_card(connection, card_id, lock=True)
     card = shift_card(connection, card_id, actor, now)
     stage = card["status"]
-    checks = CHECKS.get(stage, {})
+    checks = shift_checks(card)
     if item not in checks or item in card["data"]["results"]:
         raise ProcessConflict("This check is unavailable")
     results = dict(card["data"]["results"])
     issues = dict(card["data"]["issues"])
+    if item.startswith("aggregator_"):
+        previous = list(checks)[1:list(checks).index(item)]
+        if any(key not in results and key not in issues for key in previous):
+            raise ProcessConflict("Check the preceding aggregator first")
     status = stage
     progress = {}
     if problem.strip():
@@ -175,7 +194,7 @@ def add_shift_photo(connection: Connection, card_id: str, command_id: str, item:
                     file_id: str, actor: Actor, now: datetime) -> None:
     get_card(connection, card_id, lock=True)
     card = shift_card(connection, card_id, actor, now)
-    if not CHECKS.get(card["status"], {}).get(item, ("", False))[1] or item in card["data"]["results"]:
+    if not shift_checks(card).get(item, ("", False))[1] or item in card["data"]["results"]:
         raise ProcessConflict("The check is not accepting photos")
     target = card["assignment"]
     attach(connection, card_id, command_id, item, file_id, actor, target["chat"], target["role"], now, {})

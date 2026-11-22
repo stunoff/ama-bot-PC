@@ -116,6 +116,11 @@ def validate_settings(settings: dict) -> None:
                 or any(not isinstance(reason, str) or not reason.strip() or len(reason) > 100 for reason in reasons)
                 or len(set(reasons)) != len(reasons)):
             raise ValueError("Provide distinct write-off reasons")
+    aggregator_accounts = settings.get("aggregator_accounts", [])
+    if (not isinstance(aggregator_accounts, list) or len(aggregator_accounts) > 30
+            or any(not isinstance(name, str) or not name.strip() or len(name) > 100 for name in aggregator_accounts)
+            or len(set(aggregator_accounts)) != len(aggregator_accounts)):
+        raise ValueError("Provide distinct aggregator account names")
     validate_overrides(settings.get("timing_overrides", {}))
     for flag in ("scheduled_checklists", "scheduled_reports", "attendance_monitoring",
                  "verified_checklist_activation", "verified_scheduled_reports", "verified_attendance_monitoring"):
