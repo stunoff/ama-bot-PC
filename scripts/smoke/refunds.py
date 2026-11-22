@@ -1,7 +1,9 @@
 from datetime import UTC, datetime
+
+from sqlalchemy import select
 from ama_rs.db import create_database_engine
-from ama_rs.enterprises import Actor, save_enterprise
-from ama_rs.processes import ProcessConflict
+from ama_rs.enterprises import Actor, save_enterprise, work_deadlines
+from ama_rs.processes import ProcessConflict, claim_delivery, deliveries
 from ama_rs.refunds import record_refund_result, request_refund, reserve_refund, take_refund
 
 now = datetime(2026, 11, 23, 12, tzinfo=UTC)
@@ -19,6 +21,24 @@ settings = {
 worker, _, finance = (Actor("telegram", str(i), str(i)) for i in range(3))
 with create_database_engine().begin() as conn:
     save_enterprise(conn, settings, 0, "test")
+    early = datetime(2026, 11, 23, 5, tzinfo=UTC)
+    timed = request_refund(conn, settings["id"], "timed", "Demo", "Timed", "Partial", 100, worker, early)
+    notices = dict(conn.execute(select(deliveries.c.signal, deliveries.c.id).where(
+        deliveries.c.card_id == timed["id"]
+    )).all())
+    finance_notice = notices["financial-request"]
+    management_notice = notices["management-info"]
+    assert claim_delivery(conn, finance_notice, early) is None
+    assert claim_delivery(conn, finance_notice, early.replace(minute=59)) is None
+    assert claim_delivery(conn, finance_notice, early.replace(hour=20)) is None
+    assert claim_delivery(conn, management_notice, early.replace(hour=18)) is None
+    assert claim_delivery(conn, finance_notice, early.replace(hour=6)) is not None
+    assert claim_delivery(conn, management_notice, early.replace(hour=17, minute=59)) is not None
+    closed = settings | {"chats": settings["chats"] | {
+        "refunds": settings["chats"]["refunds"] | {"calendar_exceptions": {"2026-11-24": []}}
+    }}
+    assert list(work_deadlines(closed, "refunds", early.replace(hour=19, minute=55), (10,),
+                               refund_close_hour=23)) == [early.replace(day=25, hour=6, minute=5)]
     first = request_refund(conn, settings["id"], "first", "Demo", "Order 1", "Partial", 7000,
                            worker, now, positions=["item"])
     second = request_refund(conn, settings["id"], "second", "Demo", "Order 1", "Partial", 4000,

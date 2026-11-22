@@ -39,6 +39,21 @@ with create_database_engine().begin() as conn:
         pass
     else:
         raise AssertionError("Report exposed to another user")
+    following_day = date(2026, 11, 25)
+    for kind, endpoint in (("delivery", "handed_at"), ("pickup", "ready_at"),
+                           ("takeaway", "issued_at"), ("dine_in", "issued_at")):
+        order = data | {"order_id": kind, "fulfillment": kind, "accepted_at": "2026-11-23T23:30+03:00"}
+        import_order(conn, settings["id"], order | {endpoint: "2026-11-24T00:45+03:00"})
+        import_order(conn, settings["id"], order | {endpoint: "2026-11-23T23:50+03:00",
+                                                     "updated_at": "2026-11-24T01:00+03:00"})
+    assert summary(conn, settings["id"], start, end) == report
+    next_report = summary(conn, settings["id"], end, following_day)
+    for metric in next_report["orders"].values():
+        assert metric == {"measured": 1, "over_target": 1, "unmeasured": 0, "total_seconds": 4500}
+    import_order(conn, settings["id"], data | {"order_id": "near-midnight",
+                 "accepted_at": "2026-11-24T23:29:59.499999+03:00", "handed_at": "2026-11-24T23:59:59.999999+03:00"})
+    metric = summary(conn, settings["id"], end, following_day)["orders"]["delivery"]
+    assert metric["measured"] == 2 and metric["total_seconds"] == 6300.5
     for _ in range(2):
         schedule_reports(conn, now)
     assert conn.scalar(select(func.count()).select_from(deliveries.join(cards)).where(

@@ -50,7 +50,7 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
             start_timer(connection, card["id"], key, delivered_at, deadline - delivered_at,
                         delivery_id=record["id"])
     elif card["kind"] == "refund" and payload.get("await_financial_receipt"):
-        for deadline in work_deadlines(settings, chat, delivered_at, (10,)):
+        for deadline in work_deadlines(settings, chat, delivered_at, (10,), refund_close_hour=23):
             start_timer(connection, card["id"], "refund_followup", delivered_at,
                         deadline - delivered_at, delivery_id=record["id"])
     elif card["kind"] == "refund_control" and payload.get("kind") == "refund_control":
@@ -58,7 +58,7 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
             return
         keys = ("control_reminder_1", "control_reminder_2", "control_final")
         limits = effective(settings, f"refund.control.{card['status']}")
-        for key, deadline in zip(keys, work_deadlines(settings, chat, delivered_at, limits)):
+        for key, deadline in zip(keys, work_deadlines(settings, chat, delivered_at, limits, refund_close_hour=21)):
             start_timer(connection, card["id"], key, delivered_at, deadline - delivered_at,
                         delivery_id=record["id"])
     elif card["kind"] == "request_control" and payload.get("kind") == "request_control":

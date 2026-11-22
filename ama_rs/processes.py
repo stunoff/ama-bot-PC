@@ -12,7 +12,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.engine import Connection
 
 from ama_rs.guest_contact import pending_first_calls, pending_guest_orders
-from ama_rs.enterprises import Actor, chat_is_open, enterprises, has_role
+from ama_rs.enterprises import Actor, chat_is_open, enterprises, has_role, refund_delivery_close_hour
 
 metadata = MetaData()
 
@@ -281,7 +281,10 @@ def claim_delivery(connection: Connection, delivery_id: str, now: datetime):
     card = get_card(connection, record["card_id"])
     settings = _settings(connection, card["enterprise_id"])
     chat = settings["chats"].get(record["chat_key"])
-    if chat is None or not chat_is_open(settings, record["chat_key"], now):
+    if chat is None or not chat_is_open(
+        settings, record["chat_key"], now,
+        refund_close_hour=refund_delivery_close_hour(card["kind"], chat["kind"]),
+    ):
         return None
     guests = record["payload"].get("guest_orders")
     if guests is not None:

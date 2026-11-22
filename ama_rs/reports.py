@@ -4,8 +4,8 @@ from collections import Counter
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import JSON, Column, DateTime, ForeignKey, MetaData, String, Table, case, func, select
-from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Index, MetaData, String, Table, and_, case, func, or_, select
+from sqlalchemy.dialects.mysql import DATETIME, insert as mysql_insert
 from sqlalchemy.engine import Connection
 
 from ama_rs.checklist_setup import scenario_routes_ok
@@ -19,8 +19,10 @@ orders = Table(
     Column("enterprise_id", String(64), ForeignKey(enterprises.c.id), primary_key=True),
     Column("order_id", String(128), primary_key=True),
     Column("accepted_at", DateTime, nullable=False, index=True),
+    Column("completed_at", DATETIME(fsp=6)),
     Column("updated_at", DateTime, nullable=False),
     Column("data", JSON, nullable=False),
+    Index("ix_report_orders_completion", "enterprise_id", "completed_at"),
 )
 coverage = Table(
     "report_source_coverage", metadata,
@@ -46,18 +48,22 @@ def import_order(connection: Connection, enterprise_id: str, data: dict) -> None
         "number", "fulfillment", "accepted_at", "ready_at", "issued_at", "handed_at",
         "preorder", "cancelled", "test", "redelivery",
     ) if field in data}
+    endpoints = {}
     for key in ("ready_at", "issued_at", "handed_at"):
         if projected.get(key):
-            utc_value(datetime.fromisoformat(projected[key]))
+            endpoints[key] = utc_value(datetime.fromisoformat(projected[key]))
     for key in ("preorder", "cancelled", "test", "redelivery"):
         if key in projected and type(projected[key]) is not bool:
             raise ValueError(f"{key} must be boolean")
+    kind = projected.get("fulfillment")
+    completed = endpoints.get(END_FIELD.get(kind)) if isinstance(kind, str) else None
     statement = mysql_insert(orders).values(enterprise_id=enterprise_id, order_id=order_id,
-        accepted_at=accepted, updated_at=updated, data=projected)
+        accepted_at=accepted, completed_at=completed, updated_at=updated, data=projected)
     # MySQL evaluates assignments left-to-right. Keep the version assignment last.
     is_newer = orders.c.updated_at < statement.inserted.updated_at
     connection.execute(statement.on_duplicate_key_update([
         ("accepted_at", case((is_newer, statement.inserted.accepted_at), else_=orders.c.accepted_at)),
+        ("completed_at", case((is_newer, statement.inserted.completed_at), else_=orders.c.completed_at)),
         ("data", case((is_newer, statement.inserted.data), else_=orders.c.data)),
         ("updated_at", case((is_newer, statement.inserted.updated_at), else_=orders.c.updated_at)),
     ]))
@@ -145,21 +151,27 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
     traffic = {kind: {"measured": 0, "over_target": 0, "unmeasured": 0, "total_seconds": 0}
                for kind in TARGETS}
     unclassified = 0
-    for order in connection.execute(select(orders.c.data).where(
-        orders.c.enterprise_id == enterprise_id, orders.c.accepted_at >= start, orders.c.accepted_at < end
-    )).scalars():
+    for order, completed in connection.execute(select(
+        orders.c.data, orders.c.completed_at
+    ).where(
+        orders.c.enterprise_id == enterprise_id,
+        or_(
+            and_(orders.c.completed_at >= start, orders.c.completed_at < end),
+            and_(orders.c.completed_at.is_(None), orders.c.accepted_at >= start, orders.c.accepted_at < end),
+        ),
+    )):
         if any(order.get(flag) for flag in ("cancelled", "test", "preorder", "redelivery")):
             continue
         kind = order.get("fulfillment")
-        if kind not in TARGETS:
+        if not isinstance(kind, str) or kind not in TARGETS:
             unclassified += 1
             continue
         metric = traffic[kind]
-        finished = order.get(END_FIELD[kind])
-        if not finished:
+        if completed is None:
             metric["unmeasured"] += 1
             continue
-        seconds = (datetime.fromisoformat(finished) - datetime.fromisoformat(order["accepted_at"])).total_seconds()
+        accepted = utc_value(datetime.fromisoformat(order["accepted_at"]))
+        seconds = (completed - accepted).total_seconds()
         if seconds < 0:
             metric["unmeasured"] += 1
             continue

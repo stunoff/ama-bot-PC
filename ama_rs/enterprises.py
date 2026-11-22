@@ -259,13 +259,25 @@ def has_role(
     return role in current_roles
 
 
-def chat_is_open(settings: dict, chat_key: str, instant: datetime) -> bool:
+def refund_delivery_close_hour(card_kind: str, chat_kind: str) -> int | None:
+    if card_kind not in {"refund", "refund_control", "refund_handoff"}:
+        return None
+    if chat_kind == "refunds":
+        return 23
+    if chat_kind in {"management", "contact_management", "branch", "headquarters", "partner"}:
+        return 21
+    return None
+
+
+def chat_is_open(settings: dict, chat_key: str, instant: datetime, *, refund_close_hour: int | None = None) -> bool:
     if instant.utcoffset() is None:
         raise ValueError("Calendar time must be timezone-aware")
     chat = settings["chats"][chat_key]
     calendar = chat.get("calendar")
     local = instant.astimezone(ZoneInfo(chat.get("timezone", settings["timezone"])))
     weekday, clock = local.weekday(), local.time()
+    if refund_close_hour is not None and not 9 <= clock.hour < refund_close_hour:
+        return False
     exceptions = chat.get("calendar_exceptions", {})
     today = local.date()
     if today.isoformat() in exceptions:
@@ -289,13 +301,14 @@ def chat_is_open(settings: dict, chat_key: str, instant: datetime) -> bool:
     return False
 
 
-def work_deadlines(settings: dict, target: str, start: datetime, limits: tuple[int, ...]):
+def work_deadlines(settings: dict, target: str, start: datetime, limits: tuple[int, ...],
+                   *, refund_close_hour: int | None = None):
     """Return UTC deadlines after the requested cumulative open minutes."""
     cursor = start.astimezone(UTC)
     if target not in settings["chats"]:
         return
     chat = settings["chats"][target]
-    if chat.get("calendar") == "always" and not chat.get("calendar_exceptions"):
+    if refund_close_hour is None and chat.get("calendar") == "always" and not chat.get("calendar_exceptions"):
         for limit in limits:
             yield cursor + timedelta(minutes=limit)
         return
@@ -308,7 +321,7 @@ def work_deadlines(settings: dict, target: str, start: datetime, limits: tuple[i
     horizon = cursor + timedelta(days=14)
     while threshold is not None and cursor < horizon:
         next_minute = cursor.replace(second=0, microsecond=0) + timedelta(minutes=1)
-        if chat_is_open(settings, target, cursor):
+        if chat_is_open(settings, target, cursor, refund_close_hour=refund_close_hour):
             available = next_minute - cursor
             while threshold is not None and elapsed + available >= threshold:
                 yield cursor + (threshold - elapsed)
