@@ -1,6 +1,7 @@
+import csv
 from contextlib import nullcontext
 from datetime import UTC, date, datetime
-from io import BytesIO
+from io import BytesIO, StringIO
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
@@ -9,7 +10,7 @@ from ama_rs.db import create_database_engine
 from ama_rs.delivery_worker import _send_delivery
 from ama_rs.enterprises import Actor, save_enterprise
 from ama_rs.integrations import ingest_iiko, run_bot_command
-from ama_rs.messengers import Message
+from ama_rs.messengers import Document, Message
 from ama_rs.processes import ProcessPermissionError, cards, claim_delivery, deliveries, finish_delivery
 from ama_rs.reports import accessible_summaries, format_summary, import_coverage, import_order, schedule_reports, summary
 
@@ -147,7 +148,8 @@ with create_database_engine().begin() as conn:
     for key, accepted, handed in (("base", "19:30", "20:45"), ("within", "20:00", "21:20"),
                                   ("over", "20:15", "22:00")):
         import_order(conn, settings["id"], data | {"order_id": key,
-            "accepted_at": f"2026-11-23T{accepted}+03:00", "handed_at": f"2026-11-23T{handed}+03:00"})
+            "accepted_at": f"2026-11-23T{accepted}+03:00", "handed_at": f"2026-11-23T{handed}+03:00",
+            "number": "=2+3", "source": "iiko"})
     increased = summary(conn, settings["id"], start, end)
     groups = increased["target_exceedances"]["delivery"]
     assert groups == {"base": 1, "within_increase": 1, "over_increase": 1, "unknown": 2}
@@ -157,5 +159,18 @@ with create_database_engine().begin() as conn:
     assert timeline["intervals"][0]["duration_seconds"] == 7200
     previous_increase = summary(conn, settings["id"], end, following_day)["target_increases"]["delivery"]
     assert previous_increase["count"] == 0 and previous_increase["intervals"][0]["started_before_period"]
+    command = f"/order_speed_export {start} {end}"
+    manager = Actor("telegram", "7", "42")
+    document = run_bot_command(conn, Message("speed-export", manager, command), now)
+    assert isinstance(document, Document)
+    details = {row["order_id"]: row for row in csv.DictReader(StringIO(document.data.decode("utf-8-sig")))}
+    assert len(details) == increased["orders"]["delivery"]["over_target"]
+    assert details["within"]["target_minutes_at_acceptance"] == "90"
+    assert details["within"]["seconds_over_base"] == "1200.0" and details["within"]["seconds_over_target"] == "0"
+    assert details["within"]["order_number"] == "'=2+3" and details["within"]["order_source"] == "iiko"
+    assert details["within"]["completed_at"] == "2026-11-23T21:20:00+03:00"
+    assert details["43"]["target_minutes_at_acceptance"] == ""
+    denied = run_bot_command(conn, Message("speed-denied", Actor("telegram", "8", "42"), command), now)
+    assert "недоступно" in denied
     conn.rollback()
 print("Scoped reports, timestamps, strict thresholds, coverage and schedule deduplication verified")

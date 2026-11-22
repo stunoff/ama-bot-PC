@@ -1,5 +1,7 @@
 """Timezone-aware management reports and order completion metrics."""
 
+import csv
+import io
 from bisect import bisect_right
 from collections import Counter
 from datetime import UTC, date, datetime, time, timedelta
@@ -10,6 +12,7 @@ from sqlalchemy.dialects.mysql import DATETIME, insert as mysql_insert
 from sqlalchemy.engine import Connection
 
 from ama_rs.checklist_setup import scenario_routes_ok
+from ama_rs.csv_export import csv_text
 from ama_rs.enterprises import Actor, enterprises, has_role
 from ama_rs.order_targets import BASE_TARGETS, history_until
 from ama_rs.processes import (
@@ -49,9 +52,11 @@ def import_order(connection: Connection, enterprise_id: str, data: dict) -> None
     accepted = utc_value(datetime.fromisoformat(data["accepted_at"]))
     updated = utc_value(datetime.fromisoformat(data["updated_at"]))
     projected = {field: data[field] for field in (
-        "number", "fulfillment", "accepted_at", "ready_at", "issued_at", "handed_at",
+        "number", "source", "fulfillment", "accepted_at", "ready_at", "issued_at", "handed_at",
         "preorder", "promised_at", "state", "cancelled", "test", "redelivery",
     ) if field in data}
+    if "source" in projected and (not isinstance(projected["source"], str) or len(projected["source"]) > 64):
+        raise ValueError("Expected a short order source identifier")
     endpoints = {}
     for key in ("ready_at", "issued_at", "handed_at", "promised_at"):
         if projected.get(key):
@@ -117,7 +122,8 @@ def _quality(states: dict, source: str, day_start: date, day_end: date) -> str:
     return "partial"
 
 
-def summary(connection: Connection, enterprise_id: str, day_start: date, day_end: date) -> dict:
+def summary(connection: Connection, enterprise_id: str, day_start: date, day_end: date,
+            *, include_details: bool = False) -> dict:
     settings = settings_for(connection, enterprise_id)
     start, end = _period(day_start, day_end, settings["timezone"])
     scope = (cards.c.enterprise_id == enterprise_id, cards.c.created_at >= start, cards.c.created_at < end)
@@ -173,8 +179,9 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
     preorders = {kind: {"completed": 0, "late": 0, "late_seconds": 0, "unmeasured": 0} for kind in TARGETS}
     unfinished = dict.fromkeys(TARGETS, 0)
     unclassified = 0
-    for order, completed in connection.execute(select(
-        orders.c.data, orders.c.completed_at
+    details = []
+    for order_id, order, completed in connection.execute(select(
+        orders.c.order_id, orders.c.data, orders.c.completed_at
     ).where(
         orders.c.enterprise_id == enterprise_id,
         or_(
@@ -221,6 +228,7 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
         metric["measured"] += 1
         if seconds > TARGETS[kind] * 60:
             metric["over_target"] += 1
+            target = TARGETS[kind] if kind not in BASE_TARGETS else None
             if kind in BASE_TARGETS:
                 index = bisect_right(target_times[kind], accepted) - 1
                 if index < 0:
@@ -232,6 +240,12 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
                     else:
                         group = "over_increase" if seconds > target * 60 else "within_increase"
                 exceedances[kind][group] += 1
+            if include_details:
+                details.append({
+                    "kind": kind, "id": order_id, "number": order.get("number"), "source": order.get("source"),
+                    "accepted": accepted, "completed": completed, "endpoint": END_FIELD[kind],
+                    "seconds": seconds, "base": TARGETS[kind], "target": target,
+                })
         metric["total_seconds"] += seconds
     if quality["orders"] == "complete" and (unclassified or any(m["unmeasured"] for m in traffic.values())):
         quality["orders"] = "partial"
@@ -242,7 +256,9 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
         "current_statuses": dict(by_status), "sources": quality, "redelivery_causes": dict(redelivery_causes),
         "orders": traffic if quality["orders"] != "unavailable" or has_order_data else None,
         "target_increases": increases, "target_exceedances": exceedances,
-        "preorders": preorders, "unfinished_orders": unfinished, "unclassified_orders": unclassified, "sales": sales, "attendance": dict(attendance),
+        "preorders": preorders, "unfinished_orders": unfinished, "unclassified_orders": unclassified,
+        "sales": sales, "attendance": dict(attendance),
+        **({"details": details} if include_details else {}),
     }
 
 
@@ -268,7 +284,8 @@ def _increases(rows: list, base: int, start: datetime, end: datetime) -> dict:
 
 
 def accessible_summaries(connection: Connection, actor: Actor, now: datetime,
-                         day_start: date | None = None, day_end: date | None = None) -> list[dict]:
+                         day_start: date | None = None, day_end: date | None = None,
+                         *, include_details: bool = False) -> list[dict]:
     result = []
     for entry in connection.execute(select(enterprises.c.id, enterprises.c.settings)).mappings():
         settings = entry["settings"]
@@ -278,10 +295,33 @@ def accessible_summaries(connection: Connection, actor: Actor, now: datetime,
         ):
             end = day_end if day_end is not None else now.astimezone(ZoneInfo(settings["timezone"])).date()
             start = day_start if day_start is not None else end - timedelta(days=1)
-            result.append(summary(connection, entry["id"], start, end))
+            result.append(summary(connection, entry["id"], start, end, include_details=include_details))
     if not result:
         raise ProcessPermissionError("No accessible enterprise reports")
     return result
+
+
+def order_speed_csv(connection: Connection, actor: Actor, now: datetime, start: date, end: date) -> bytes:
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer)
+    writer.writerow(("enterprise", "order_id", "order_number", "fulfillment", "accepted_at",
+                     "completion_event", "completed_at", "duration_seconds", "base_minutes",
+                     "target_minutes_at_acceptance", "seconds_over_base", "seconds_over_target",
+                     "order_source", "source_coverage"))
+    for report in accessible_summaries(connection, actor, now, start, end, include_details=True):
+        zone = ZoneInfo(report["timezone"])
+        for row in sorted(report["details"], key=lambda item: (item["completed"], item["id"])):
+            target, seconds = row["target"], row["seconds"]
+            number = row["number"] if type(row["number"]) in (str, int) else ""
+            writer.writerow((
+                csv_text(report["enterprise"]), csv_text(row["id"]), csv_text(str(number)),
+                row["kind"], row["accepted"].replace(tzinfo=UTC).astimezone(zone).isoformat(),
+                row["endpoint"], row["completed"].replace(tzinfo=UTC).astimezone(zone).isoformat(),
+                seconds, row["base"], target, seconds - row["base"] * 60,
+                None if target is None else max(seconds - target * 60, 0),
+                csv_text(row["source"]), report["sources"]["orders"],
+            ))
+    return buffer.getvalue().encode("utf-8-sig")
 
 
 def schedule_reports(connection: Connection, now: datetime) -> None:

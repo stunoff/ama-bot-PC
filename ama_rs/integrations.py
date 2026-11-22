@@ -28,7 +28,7 @@ from ama_rs.refund_report import refund_csv, refund_report
 from ama_rs.refunds import take_refund
 from ama_rs.route_probe import confirm_probe, start_probe
 from ama_rs.reports import (
-    accessible_summaries, format_summary, import_coverage, import_order, orders, refresh_reports,
+    accessible_summaries, format_summary, import_coverage, import_order, order_speed_csv, orders, refresh_reports,
 )
 from ama_rs.requests import report_problem, submit_result, take_request
 from ama_rs.shifts import (
@@ -73,7 +73,7 @@ def _scope(settings: dict, actor: Actor, now: datetime) -> list[str]:
 
 COMMANDS = {
     "/start", "/menu", "/tasks", "/problem", "/take", "/accept", "/result",
-    "/step", "/photo", "/accounting", "/checklist", "/cash_menu", "/operator_shift", "/report", "/refund_report", "/refund_export", "/sales_task_help", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help", "/readiness", "/route_tests", "/route_confirm", "/checklist_setup", "/enterprise_new", "/scenarios",
+    "/step", "/photo", "/accounting", "/checklist", "/cash_menu", "/operator_shift", "/report", "/order_speed_export", "/refund_report", "/refund_export", "/sales_task_help", "/workflow", "/link", "/settings", "/timers", "/configure", "/settings_help", "/readiness", "/route_tests", "/route_confirm", "/checklist_setup", "/enterprise_new", "/scenarios",
 }
 
 
@@ -214,10 +214,19 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
                 return "Файл превышает ограничение выгрузки. Выберите более узкий период."
             return Document(f"refunds-{begin}-{until}.csv", data)
         return refund_report(connection, actor, now, begin, until, filters)
+    if command == "/order_speed_export":
+        if not arguments:
+            return "Укажите начало и конец периода: /order_speed_export ГГГГ-ММ-ДД ГГГГ-ММ-ДД"
+        start, end = (date.fromisoformat(value) for value in arguments.split())
+        data = order_speed_csv(connection, actor, now, start, end)
+        if len(data) > 50_000_000:
+            return "Файл превышает ограничение выгрузки. Выберите более узкий период."
+        return Document(f"order-speed-{start}-{end}.csv", data)
     if command == "/report":
         start, end = (date.fromisoformat(value) for value in arguments.split())
         reports = accessible_summaries(connection, actor, now, start, end)
-        return "\n\n".join(map(format_summary, reports))[:3800]
+        details = f"\n\nДетализация: /order_speed_export {start} {end}"
+        return "\n\n".join(map(format_summary, reports))[:3800 - len(details)] + details
     if command == "/checklist":
         return _checklist_screen(connection, arguments.strip(), actor, now)
     if command == "/checklist_problem_help":

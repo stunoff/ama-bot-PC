@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
+from ama_rs.csv_export import csv_text
 from ama_rs.enterprises import Actor, enterprises, has_role
 from ama_rs.processes import ProcessPermissionError, actions, cards
 from ama_rs.refunds import confirmed_amount
@@ -135,13 +136,6 @@ def refund_report(connection: Connection, actor: Actor, now: datetime, begin: da
     return "\n".join(output)[:3800]
 
 
-def _csv_text(value: str | None) -> str:
-    text = value or ""
-    if text.startswith(("\t", "\r", "\n")) or text.lstrip().startswith(("=", "+", "-", "@")):
-        return "'" + text
-    return text
-
-
 def refund_csv(connection: Connection, actor: Actor, now: datetime, begin: date,
                until: date, filters: dict) -> bytes:
     buffer = io.StringIO(newline="")
@@ -168,10 +162,10 @@ def refund_csv(connection: Connection, actor: Actor, now: datetime, begin: date,
                     counted = paid
                     credited.add(key)
                     confirmation = "confirmed"
-            writer.writerow((_csv_text(row["enterprise_id"]), row["id"],
+            writer.writerow((csv_text(row["enterprise_id"]), row["id"],
                              row["created_at"].replace(tzinfo=UTC).astimezone(zone).isoformat(),
-                             _csv_text(data["brand"]), _csv_text(data["reason"]),
+                             csv_text(data["brand"]), csv_text(data["reason"]),
                              "enterprise" if data["requester"]["role"] == "service_account" else "operator",
-                             _csv_text(data["worker"].get("user")), row["status"], int(bool(data.get("positions"))),
+                             csv_text(data["worker"].get("user")), row["status"], int(bool(data.get("positions"))),
                              data["requested_kopecks"], paid, counted, confirmation))
     return buffer.getvalue().encode("utf-8-sig")

@@ -139,7 +139,10 @@ Compose-файл. Разрешите исходящий HTTPS к `api.telegram.o
 
 Команда `/report YYYY-MM-DD YYYY-MM-DD` показывает управленческую сводку за
 локальные даты предприятия. Правая граница исключается. Доступ имеют
-управляющий и руководитель филиала в своих рабочих чатах.
+управляющий и руководитель филиала в своих рабочих чатах. Команда
+`/order_speed_export YYYY-MM-DD YYYY-MM-DD` выгружает в CSV заказы,
+превысившие базовое время, с применимым нормативом на момент принятия,
+типом конечной отметки и полнотой данных.
 
 Укажите `"scheduled_reports": true` в конфигурации предприятия и запустите
 `worker` для ежедневных сводок в управление и недельных/месячных сводок в
@@ -147,7 +150,8 @@ Compose-файл. Разрешите исходящий HTTPS к `api.telegram.o
 сохраняет границы периода, пока чат закрыт.
 
 Адаптер iiko может присылать `orders.updated` с полями `order_id`,
-`number`, `fulfillment` (`delivery`, `pickup`, `takeaway`, `dine_in`),
+`number`, коротким идентификатором источника `source`,
+`fulfillment` (`delivery`, `pickup`, `takeaway`, `dine_in`),
 `accepted_at`, `updated_at` и доступными `handed_at`, `ready_at` и
 `issued_at`. Событие `source.coverage` передаёт `day`, `source`,
 `state` (`complete`, `partial`, `unavailable`) и `updated_at`. Данные
