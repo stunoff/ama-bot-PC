@@ -4,7 +4,7 @@ from collections import Counter
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import JSON, Column, DateTime, ForeignKey, Index, MetaData, String, Table, and_, case, func, or_, select
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Index, MetaData, String, Table, and_, case, func, literal, or_, select
 from sqlalchemy.dialects.mysql import DATETIME, insert as mysql_insert
 from sqlalchemy.engine import Connection
 
@@ -46,10 +46,10 @@ def import_order(connection: Connection, enterprise_id: str, data: dict) -> None
     updated = utc_value(datetime.fromisoformat(data["updated_at"]))
     projected = {field: data[field] for field in (
         "number", "fulfillment", "accepted_at", "ready_at", "issued_at", "handed_at",
-        "preorder", "cancelled", "test", "redelivery",
+        "preorder", "promised_at", "state", "cancelled", "test", "redelivery",
     ) if field in data}
     endpoints = {}
-    for key in ("ready_at", "issued_at", "handed_at"):
+    for key in ("ready_at", "issued_at", "handed_at", "promised_at"):
         if projected.get(key):
             endpoints[key] = utc_value(datetime.fromisoformat(projected[key]))
     for key in ("preorder", "cancelled", "test", "redelivery"):
@@ -57,14 +57,24 @@ def import_order(connection: Connection, enterprise_id: str, data: dict) -> None
             raise ValueError(f"{key} must be boolean")
     kind = projected.get("fulfillment")
     completed = endpoints.get(END_FIELD.get(kind)) if isinstance(kind, str) else None
+    if "state" in projected and projected["state"] not in ("open", "completed"):
+        raise ValueError("Expected an open or completed order state")
+    if projected.get("preorder") and "promised_at" in endpoints:
+        projected["initial_promised_at"] = projected["promised_at"]
     statement = mysql_insert(orders).values(enterprise_id=enterprise_id, order_id=order_id,
         accepted_at=accepted, completed_at=completed, updated_at=updated, data=projected)
     # MySQL evaluates assignments left-to-right. Keep the version assignment last.
     is_newer = orders.c.updated_at < statement.inserted.updated_at
+    initial_promise = orders.c.data["initial_promised_at"].as_string()
+    latest_data = case(
+        (and_(literal(projected.get("preorder", False)), initial_promise.is_not(None)),
+         func.json_set(statement.inserted.data, "$.initial_promised_at", initial_promise)),
+        else_=statement.inserted.data,
+    )
     connection.execute(statement.on_duplicate_key_update([
         ("accepted_at", case((is_newer, statement.inserted.accepted_at), else_=orders.c.accepted_at)),
         ("completed_at", case((is_newer, statement.inserted.completed_at), else_=orders.c.completed_at)),
-        ("data", case((is_newer, statement.inserted.data), else_=orders.c.data)),
+        ("data", case((is_newer, latest_data), else_=orders.c.data)),
         ("updated_at", case((is_newer, statement.inserted.updated_at), else_=orders.c.updated_at)),
     ]))
 
@@ -150,6 +160,8 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
 
     traffic = {kind: {"measured": 0, "over_target": 0, "unmeasured": 0, "total_seconds": 0}
                for kind in TARGETS}
+    preorders = {kind: {"completed": 0, "late": 0, "late_seconds": 0, "unmeasured": 0} for kind in TARGETS}
+    unfinished = dict.fromkeys(TARGETS, 0)
     unclassified = 0
     for order, completed in connection.execute(select(
         orders.c.data, orders.c.completed_at
@@ -158,13 +170,34 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
         or_(
             and_(orders.c.completed_at >= start, orders.c.completed_at < end),
             and_(orders.c.completed_at.is_(None), orders.c.accepted_at >= start, orders.c.accepted_at < end),
+            and_(orders.c.accepted_at < end, or_(
+                orders.c.completed_at >= end,
+                and_(orders.c.completed_at.is_(None), orders.c.data["state"].as_string() == "open"),
+            )),
         ),
     )):
-        if any(order.get(flag) for flag in ("cancelled", "test", "preorder", "redelivery")):
+        if any(order.get(flag) for flag in ("cancelled", "test", "redelivery")):
             continue
         kind = order.get("fulfillment")
         if not isinstance(kind, str) or kind not in TARGETS:
             unclassified += 1
+            continue
+        if (completed is not None and completed >= end
+                or completed is None and order.get("state") == "open"):
+            if not order.get("preorder"):
+                unfinished[kind] += 1
+            continue
+        if order.get("preorder"):
+            metric = preorders[kind]
+            if completed is not None:
+                metric["completed"] += 1
+            promise = order.get("initial_promised_at")
+            if completed is None or not promise:
+                metric["unmeasured"] += 1
+            else:
+                late = (completed - utc_value(datetime.fromisoformat(promise))).total_seconds()
+                metric["late"] += late > 0
+                metric["late_seconds"] += max(late, 0)
             continue
         metric = traffic[kind]
         if completed is None:
@@ -186,7 +219,7 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
         "from": day_start.isoformat(), "until": day_end.isoformat(), "counts": dict(by_kind),
         "current_statuses": dict(by_status), "sources": quality, "redelivery_causes": dict(redelivery_causes),
         "orders": traffic if quality["orders"] != "unavailable" or has_order_data else None,
-        "unclassified_orders": unclassified, "sales": sales, "attendance": dict(attendance),
+        "preorders": preorders, "unfinished_orders": unfinished, "unclassified_orders": unclassified, "sales": sales, "attendance": dict(attendance),
     }
 
 
@@ -253,6 +286,14 @@ def format_summary(data: dict) -> str:
             continue
         lines.append(f"{titles[kind]}: измерено {metric['measured']}, "
                      f"сверх нормы {metric['over_target']}, без отметки {metric['unmeasured']}")
+    for kind, count in data.get("unfinished_orders", {}).items():
+        if count:
+            lines.append(f"{titles[kind]} · незавершено на конец периода: {count}")
+    for kind, metric in data.get("preorders", {}).items():
+        if metric["completed"] or metric["unmeasured"]:
+            lines.append(f"{titles[kind]} · предзаказы: выполнено {metric['completed']}, "
+                         f"с опозданием {metric['late']} (суммарно {metric['late_seconds'] / 60:g} мин), "
+                         f"без данных {metric['unmeasured']}")
     if data["unclassified_orders"]:
         lines.append(f"Без типа обслуживания: {data['unclassified_orders']}")
     kinds = {"problem": "Проблемы", "task": "Поручения", "audit": "Аудиты",

@@ -46,7 +46,9 @@ with create_database_engine().begin() as conn:
         import_order(conn, settings["id"], order | {endpoint: "2026-11-24T00:45+03:00"})
         import_order(conn, settings["id"], order | {endpoint: "2026-11-23T23:50+03:00",
                                                      "updated_at": "2026-11-24T01:00+03:00"})
-    assert summary(conn, settings["id"], start, end) == report
+    prior_day = summary(conn, settings["id"], start, end)
+    assert prior_day["orders"] == report["orders"]
+    assert prior_day["unfinished_orders"] == dict.fromkeys(report["orders"], 1)
     next_report = summary(conn, settings["id"], end, following_day)
     for metric in next_report["orders"].values():
         assert metric == {"measured": 1, "over_target": 1, "unmeasured": 0, "total_seconds": 4500}
@@ -54,6 +56,20 @@ with create_database_engine().begin() as conn:
                  "accepted_at": "2026-11-24T23:29:59.499999+03:00", "handed_at": "2026-11-24T23:59:59.999999+03:00"})
     metric = summary(conn, settings["id"], end, following_day)["orders"]["delivery"]
     assert metric["measured"] == 2 and metric["total_seconds"] == 6300.5
+    preorder = data | {"order_id": "preorder", "preorder": True, "promised_at": "2026-11-24T00:30+03:00",
+                       "accepted_at": "2026-11-23T23:00+03:00"}
+    import_order(conn, settings["id"], preorder)
+    import_order(conn, settings["id"], preorder | {
+        "handed_at": "2026-11-24T00:45+03:00", "promised_at": "2026-11-24T01:00+03:00",
+        "updated_at": "2026-11-24T21:00+03:00",
+    })
+    import_order(conn, settings["id"], data | {"order_id": "unfinished", "state": "open"})
+    first_day = summary(conn, settings["id"], start, end)
+    assert first_day["unfinished_orders"]["delivery"] == 2
+    second_day = summary(conn, settings["id"], end, following_day)
+    assert second_day["unfinished_orders"]["delivery"] == 1
+    assert second_day["preorders"]["delivery"] == {"completed": 1, "late": 1, "late_seconds": 900, "unmeasured": 0}
+    assert second_day["orders"]["delivery"] == metric
     for _ in range(2):
         schedule_reports(conn, now)
     assert conn.scalar(select(func.count()).select_from(deliveries.join(cards)).where(
