@@ -21,6 +21,7 @@ TIMER_RANK = {
     "execution_warning": 1, "execution": 2, "execution_escalation": 3,
     "refund_reminder_1": 1, "refund_reminder_2": 2, "refund_reminder_3": 3,
     "financial_deadline": 4, "refund_followup": 5,
+    "refund_question_first": 1, "refund_question_second": 2, "refund_question_escalation": 3,
     "review_reminder": 1, "review_overdue": 2, "review_escalation": 3,
     "operation_take_reminder": 1, "operation_take_escalation": 3,
     "operation_work_reminder": 1, "operation_work_repeat": 2, "operation_work_escalation": 3,
@@ -49,6 +50,13 @@ def after_delivery(connection: Connection, record: dict, delivered_at: datetime)
         for key, deadline in zip(keys, work_deadlines(settings, chat, delivered_at, limits)):
             start_timer(connection, card["id"], key, delivered_at, deadline - delivered_at,
                         delivery_id=record["id"])
+    elif card["kind"] == "refund" and payload.get("kind") == "clarification":
+        if (card["status"] != "clarification" or "question_round" not in payload
+                or payload["question_round"] != card["data"].get("question_round")):
+            return
+        _delivery_clocks(connection, card, record, settings, delivered_at,
+                         ("refund_question_first", "refund_question_second", "refund_question_escalation"),
+                         (10, 20, 40))
     elif card["kind"] == "refund" and payload.get("await_financial_receipt"):
         for deadline in work_deadlines(settings, chat, delivered_at, (10,), refund_close_hour=23):
             start_timer(connection, card["id"], "refund_followup", delivered_at,
@@ -171,6 +179,14 @@ def _target(card, key: str, settings: dict) -> str | None:
     if key == "acceptance" and card["kind"] == "technical" and not card["data"].get("night"):
         return None
     if card["kind"] == "refund":
+        if key in {"refund_question_first", "refund_question_second", "refund_question_escalation"}:
+            requester = card["data"]["requester"]["chat"]
+            if key != "refund_question_escalation":
+                return requester
+            kind = settings["chats"].get(requester, {}).get("kind")
+            management = {"contact_center": "contact_management", "enterprise": "management",
+                          "contact_management": "branch", "management": "branch"}.get(kind)
+            return _unique_chat(settings, management) if management else None
         return card["data"]["worker"]["chat"]
     if key in {"cash_review_escalation", "cash_discrepancy_escalation", "cash_question_escalation"}:
         kind = "management" if key == "cash_question_escalation" else "branch"
@@ -316,6 +332,9 @@ def queue_due_reminders(connection: Connection, now: datetime) -> None:
                     start_timer(connection, card_id, "request_control_advance", due, followup - due)
             target = escalation_chat(connection, card) if key == "refund_guest_escalation" else _target(card, key, settings)
             payload = {"kind": "reminder", "timer": key, "card_revision": card["revision"]}
+            if key.startswith("refund_question_"):
+                payload.pop("card_revision")
+                payload["question_round"] = card["data"]["question_round"]
             if key in {"operation_take_escalation", "operation_work_escalation"}:
                 payload["operation_follow_up"] = "take" if key == "operation_take_escalation" else "work"
             if key == "financial_deadline":

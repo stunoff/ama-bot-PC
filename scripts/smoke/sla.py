@@ -91,5 +91,33 @@ with create_database_engine().begin() as conn:
     stored = conn.scalar(select(timers.c.due_at).where(timers.c.card_id == task["id"],
                          timers.c.key == "review_reminder"))
     assert stored == (now + timedelta(days=1, minutes=15)).replace(tzinfo=None)
+    refund = request_refund(conn, settings["id"], "working-question", "Demo", "Order 2", "Reason", 500,
+                            worker, now)
+    question_id = refund["id"]
+    assert take_refund(conn, question_id, "take", 1, finance, now) == 2
+    assert ask_refund_question(conn, question_id, "question", 2, "Check order", finance, now) == 3
+    notices = select(deliveries).where(deliveries.c.card_id == question_id)
+    question = conn.scalar(notices.with_only_columns(deliveries.c.id).where(deliveries.c.signal == "question:3"))
+    assert conn.scalar(select(timers.c.key).where(
+        timers.c.card_id == question_id, timers.c.key == "refund_question_first"
+    )) is None
+    delivered = now + timedelta(minutes=3)
+    claim = claim_delivery(conn, question, delivered)
+    assert finish_delivery(conn, question, claim["attempt_id"], external_id="question")
+    after_delivery(conn, claim, delivered)
+    for minutes, suffix, chat in ((10, "first", "enterprise"), (20, "second", "enterprise"),
+                                   (40, "escalation", "management")):
+        due = delivered + timedelta(minutes=minutes)
+        key = f"refund_question_{suffix}"
+        expected = notices.where(deliveries.c.signal == f"timer:3:{key}")
+        queue_due_reminders(conn, due - timedelta(seconds=1))
+        assert conn.execute(expected).first() is None
+        queue_due_reminders(conn, due)
+        assert conn.execute(expected).mappings().one()["chat_key"] == chat
+    escalation = conn.scalar(notices.with_only_columns(deliveries.c.id).where(
+        deliveries.c.signal == "timer:3:refund_question_escalation"
+    ))
+    assert answer_refund_question(conn, question_id, "response", 3, "Done", worker, due) == 4
+    assert claim_delivery(conn, escalation, due) is None
     conn.rollback()
 print("Unchanged financial deadline, first-delivery escalation gate and working-time review SLA verified")

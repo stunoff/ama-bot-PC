@@ -168,8 +168,9 @@ def ask_refund_question(connection: Connection, card_id: str, command_id: str, r
     new_revision = apply_action(connection, card_id, command_id, revision,
         Transition("refund_question", frozenset({"checking"}), "clarification", frozenset({"finance_executor"})),
         actor, worker["chat"], "finance_executor", now,
-        updates={"question": question}, assignment=requester)
-    enqueue(connection, card_id, f"question:{new_revision}", requester["chat"], {"kind": "clarification"}, now)
+        updates={"question": question, "question_round": revision + 1}, assignment=requester)
+    enqueue(connection, card_id, f"question:{new_revision}", requester["chat"],
+            {"kind": "clarification", "question": question, "question_round": new_revision}, now)
     return new_revision
 
 

@@ -26,6 +26,9 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
     data = card["data"]
     payload = record["payload"]
     status = f"{card['kind']} · {card['status']} · {card['id']} · v{card['revision']}"
+    if payload.get("kind") == "reminder" and payload["timer"].startswith("refund_question_"):
+        return (f"Ожидается ответ на уточнение по возврату {card['id']}\n"
+                f"Предприятие: {card['enterprise_id']}\nВопрос: {data['question']}")[:3800], None
     if payload.get("kind") == "reminder":
         return f"Требуется действие: {status} · {payload['timer']}", None
     if payload.get("kind") == "route_probe":
