@@ -5,6 +5,7 @@ import hmac
 import json
 from datetime import date, datetime
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import Column, DateTime, MetaData, String, Table, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -26,7 +27,9 @@ from ama_rs.processes import ProcessConflict, ProcessPermissionError, cards, cre
 from ama_rs.refund_report import refund_csv, refund_report
 from ama_rs.refunds import take_refund
 from ama_rs.route_probe import confirm_probe, start_probe
-from ama_rs.reports import accessible_summaries, format_summary, import_coverage, import_order
+from ama_rs.reports import (
+    accessible_summaries, format_summary, import_coverage, import_order, orders, refresh_reports,
+)
 from ama_rs.requests import report_problem, submit_result, take_request
 from ama_rs.shifts import (
     accept_cash, accept_checklist, add_checklist_photo, begin_checklist, complete_step,
@@ -414,9 +417,20 @@ def ingest_iiko(connection: Connection, payload: dict, now: datetime) -> bool:
                          datetime.fromisoformat(data["observed_at"]))
         scan_attendance(connection, now, enterprise_id=enterprise_id)
     elif kind == "orders.updated":
+        zone = ZoneInfo(enterprise["settings"]["timezone"])
+        previous = connection.scalar(select(orders.c.data).where(
+            orders.c.enterprise_id == enterprise_id, orders.c.order_id == data["order_id"],
+        ))
+        previous_order_day = (
+            datetime.fromisoformat(previous["accepted_at"]).astimezone(zone).date() if previous else None
+        )
         import_order(connection, enterprise_id, data)
+        accepted = datetime.fromisoformat(data["accepted_at"]).astimezone(zone).date()
+        # Reclassifying or retiming a version can change periods before its new date.
+        refresh_reports(connection, enterprise_id, now, min(accepted, previous_order_day or accepted))
     elif kind == "source.coverage":
         import_coverage(connection, enterprise_id, data)
+        refresh_reports(connection, enterprise_id, now, date.fromisoformat(data["day"]))
         if data["source"] in {"schedule", "attendance"}:
             scan_attendance(connection, now, enterprise_id=enterprise_id)
     elif kind == "shift.checklist_due":

@@ -10,7 +10,9 @@ from sqlalchemy.engine import Connection
 
 from ama_rs.checklist_setup import scenario_routes_ok
 from ama_rs.enterprises import Actor, enterprises, has_role
-from ama_rs.processes import ProcessPermissionError, cards, create_card, enqueue, utc_value
+from ama_rs.processes import (
+    ProcessPermissionError, advance_system_card, cards, create_card, deliveries, enqueue, get_card, utc_value,
+)
 from ama_rs.requests import settings_for
 
 metadata = MetaData()
@@ -273,6 +275,37 @@ def schedule_reports(connection: Connection, now: datetime) -> None:
                 {"report": summary(connection, entry["id"], start, day), "frequency": kind},
                 now, status="closed")
             enqueue(connection, report["id"], "report", chat, {"kind": "report"}, now)
+
+
+def refresh_reports(connection: Connection, enterprise_id: str, now: datetime, since: date) -> None:
+    candidates = connection.scalars(select(cards.c.id).where(
+        cards.c.enterprise_id == enterprise_id, cards.c.kind == "report",
+        cards.c.data["report"]["until"].as_string() > since.isoformat(),
+    ).order_by(cards.c.id)).all()
+    for card_id in candidates:
+        card = get_card(connection, card_id, lock=True)
+        previous = card["data"]["report"]
+        latest = summary(connection, enterprise_id, date.fromisoformat(previous["from"]),
+                         date.fromisoformat(previous["until"]))
+        if latest == previous:
+            continue
+        revision = advance_system_card(connection, card, "closed", "report_updated", now,
+            data=card["data"] | {"report": latest, "updated_at": now.isoformat()})
+        queue_report_edit(connection, card, revision, now)
+
+
+def queue_report_edit(connection: Connection, card, revision: int, now: datetime) -> None:
+    chat = card["assignment"]["chat"]
+    original = connection.execute(select(deliveries).where(
+        deliveries.c.card_id == card["id"], deliveries.c.chat_key == chat,
+        deliveries.c.signal == "report", deliveries.c.state == "sent",
+    )).mappings().one_or_none()
+    if original is None or not original["payload"].get("delivery_chat"):
+        return
+    enqueue(connection, card["id"], f"report-edit:{revision}", chat, {
+        "kind": "report", "edit": original["external_id"],
+        "expected_chat": original["payload"]["delivery_chat"], "card_revision": revision,
+    }, now)
 
 
 def format_summary(data: dict) -> str:

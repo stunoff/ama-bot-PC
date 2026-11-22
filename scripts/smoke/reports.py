@@ -3,7 +3,8 @@ from datetime import UTC, date, datetime
 from sqlalchemy import func, select
 from ama_rs.db import create_database_engine
 from ama_rs.enterprises import Actor, save_enterprise
-from ama_rs.processes import ProcessPermissionError, cards, deliveries
+from ama_rs.integrations import ingest_iiko
+from ama_rs.processes import ProcessPermissionError, cards, claim_delivery, deliveries, finish_delivery
 from ama_rs.reports import accessible_summaries, format_summary, import_coverage, import_order, schedule_reports, summary
 
 now = datetime(2026, 11, 24, 9, tzinfo=UTC)
@@ -12,7 +13,7 @@ settings = {
     "id": "report-test", "iiko_id": "report-test", "name": "Demo", "timezone": "Europe/Moscow",
     "format": "delivery", "server_address": "server.invalid", "lm_address": "lm.invalid",
     "contact_mode": "independent", "final_route": "headquarters", "brands": ["Demo"], "scheduled_reports": True,
-    "chats": {"management": {"kind": "management", "id": "42", "platform": "telegram", "calendar": []}},
+    "chats": {"management": {"kind": "management", "id": "42", "platform": "telegram", "calendar": "always"}},
     "grants": [{"chat": "management", "role": "manager", "user": "7"}],
 }
 with create_database_engine().begin() as conn:
@@ -74,5 +75,21 @@ with create_database_engine().begin() as conn:
         schedule_reports(conn, now)
     assert conn.scalar(select(func.count()).select_from(deliveries.join(cards)).where(
         cards.c.enterprise_id == settings["id"], deliveries.c.signal == "report")) == 1
+    original = conn.scalar(select(deliveries.c.id).select_from(deliveries.join(cards)).where(
+        cards.c.enterprise_id == settings["id"], deliveries.c.signal == "report"))
+    attempt = claim_delivery(conn, original, now)
+    assert finish_delivery(conn, original, attempt["attempt_id"], external_id="42")
+    correction = {"id": "order-correction", "enterprise_id": settings["iiko_id"], "type": "orders.updated",
+                  "data": data | {"order_id": "44", "handed_at": "2026-11-23T15:30+03:00",
+                                  "updated_at": "2026-11-24T18:00+03:00"}}
+    assert ingest_iiko(conn, correction, now)
+    assert not ingest_iiko(conn, correction, now)
+    assert ingest_iiko(conn, correction | {"id": "same-data"}, now)
+    edit = conn.execute(select(deliveries).where(
+        deliveries.c.card_id == attempt["card_id"], deliveries.c.signal.startswith("report-edit:")
+    )).mappings().one()
+    claimed_edit = claim_delivery(conn, edit["id"], now)
+    assert claimed_edit["payload"]["edit"] == "42"
+    assert claimed_edit["payload"]["expected_chat"]["id"] == "42"
     conn.rollback()
 print("Scoped reports, timestamps, strict thresholds, coverage and schedule deduplication verified")

@@ -4,6 +4,7 @@ import os
 import time
 from datetime import UTC, date, datetime, timedelta
 from urllib.error import HTTPError
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, select, update
 
@@ -16,7 +17,7 @@ from ama_rs.processes import attachments, claim_delivery, deliveries, finish_del
 from ama_rs.operator_shift import outstanding
 from ama_rs.refunds import confirmed_amount
 from ama_rs.reminders import after_delivery, queue_due_reminders
-from ama_rs.reports import format_summary, schedule_reports, summary
+from ama_rs.reports import format_summary, queue_report_edit, schedule_reports, summary
 from ama_rs.shift_scheduler import schedule_checklists
 from ama_rs.shifts import refresh_management_card
 
@@ -88,10 +89,15 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
                 f"Бренд: {data['brand']} · {amount:.2f} ₽\n"
                 f"Контроль: {card['id']} · версия {card['revision']}"), None
     if payload.get("kind") == "report":
-        period = data["report"]
-        latest = summary(connection, card["enterprise_id"], date.fromisoformat(period["from"]),
-                         date.fromisoformat(period["until"]))
-        return format_summary(latest)[:3800], None
+        report = data["report"]
+        if record["signal"] == "report":
+            report = summary(connection, card["enterprise_id"], date.fromisoformat(report["from"]),
+                             date.fromisoformat(report["until"]))
+        text = format_summary(report)
+        if updated := data.get("updated_at"):
+            local = datetime.fromisoformat(updated).astimezone(ZoneInfo(report["timezone"]))
+            text = f"Обновлено {local:%d.%m.%Y %H:%M}\n" + text
+        return text[:3800], None
     if payload.get("kind") == "attachment":
         file = connection.execute(select(attachments).where(
             attachments.c.card_id == card["id"], attachments.c.command_id == payload["command_id"]
@@ -184,6 +190,8 @@ def deliver_batch(engine, now: datetime) -> None:
                     after_delivery(connection, record, delivered_at)
                     if record["signal"] == "management-card" and card["revision"] != rendered_revision:
                         refresh_management_card(connection, card, card["revision"], delivered_at)
+                    if record["signal"] == "report" and card["revision"] != rendered_revision:
+                        queue_report_edit(connection, card, card["revision"], delivered_at)
 
 
 def main() -> None:
