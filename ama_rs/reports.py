@@ -7,7 +7,10 @@ from collections import Counter
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import JSON, Column, DateTime, ForeignKey, Index, MetaData, String, Table, and_, case, func, literal, or_, select
+from sqlalchemy import (
+    JSON, Column, DateTime, ForeignKey, ForeignKeyConstraint, Index, MetaData, String, Table,
+    and_, case, func, or_, select,
+)
 from sqlalchemy.dialects.mysql import DATETIME, insert as mysql_insert
 from sqlalchemy.engine import Connection
 
@@ -27,9 +30,17 @@ orders = Table(
     Column("order_id", String(128), primary_key=True),
     Column("accepted_at", DateTime, nullable=False, index=True),
     Column("completed_at", DATETIME(fsp=6)),
-    Column("updated_at", DateTime, nullable=False),
+    Column("updated_at", DATETIME(fsp=6), nullable=False),
     Column("data", JSON, nullable=False),
     Index("ix_report_orders_completion", "enterprise_id", "completed_at"),
+)
+preorder_promises = Table(
+    "report_preorder_promises", metadata,
+    Column("enterprise_id", String(64), primary_key=True),
+    Column("order_id", String(128), primary_key=True),
+    Column("source_updated_at", DATETIME(fsp=6), primary_key=True),
+    Column("promised_at", DATETIME(fsp=6), nullable=False),
+    ForeignKeyConstraint(["enterprise_id", "order_id"], [orders.c.enterprise_id, orders.c.order_id]),
 )
 coverage = Table(
     "report_source_coverage", metadata,
@@ -68,15 +79,13 @@ def import_order(connection: Connection, enterprise_id: str, data: dict) -> None
     completed = endpoints.get(END_FIELD.get(kind)) if isinstance(kind, str) else None
     if "state" in projected and projected["state"] not in ("open", "completed"):
         raise ValueError("Expected an open or completed order state")
-    if projected.get("preorder") and "promised_at" in endpoints:
-        projected["initial_promised_at"] = projected["promised_at"]
     statement = mysql_insert(orders).values(enterprise_id=enterprise_id, order_id=order_id,
         accepted_at=accepted, completed_at=completed, updated_at=updated, data=projected)
     # MySQL evaluates assignments left-to-right. Keep the version assignment last.
     is_newer = orders.c.updated_at < statement.inserted.updated_at
     initial_promise = orders.c.data["initial_promised_at"].as_string()
     latest_data = case(
-        (and_(literal(projected.get("preorder", False)), initial_promise.is_not(None)),
+        (initial_promise.is_not(None),
          func.json_set(statement.inserted.data, "$.initial_promised_at", initial_promise)),
         else_=statement.inserted.data,
     )
@@ -86,6 +95,12 @@ def import_order(connection: Connection, enterprise_id: str, data: dict) -> None
         ("data", case((is_newer, latest_data), else_=orders.c.data)),
         ("updated_at", case((is_newer, statement.inserted.updated_at), else_=orders.c.updated_at)),
     ]))
+    if projected.get("preorder") and "promised_at" in endpoints:
+        promise = mysql_insert(preorder_promises).values(
+            enterprise_id=enterprise_id, order_id=order_id, source_updated_at=updated,
+            promised_at=endpoints["promised_at"],
+        )
+        connection.execute(promise.on_duplicate_key_update(promised_at=preorder_promises.c.promised_at))
 
 
 def import_coverage(connection: Connection, enterprise_id: str, data: dict) -> None:
@@ -180,8 +195,13 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
     unfinished = dict.fromkeys(TARGETS, 0)
     unclassified = 0
     details = []
-    for order_id, order, completed in connection.execute(select(
-        orders.c.order_id, orders.c.data, orders.c.completed_at
+    first_promise = select(preorder_promises.c.promised_at).where(
+        preorder_promises.c.enterprise_id == orders.c.enterprise_id,
+        preorder_promises.c.order_id == orders.c.order_id,
+    ).order_by(preorder_promises.c.source_updated_at).limit(1).scalar_subquery()
+    for order_id, order, completed, promised_at in connection.execute(select(
+        orders.c.order_id, orders.c.data, orders.c.completed_at,
+        case((orders.c.data["preorder"].as_boolean(), first_promise)),
     ).where(
         orders.c.enterprise_id == enterprise_id,
         or_(
@@ -208,11 +228,13 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
             metric = preorders[kind]
             if completed is not None:
                 metric["completed"] += 1
-            promise = order.get("initial_promised_at")
-            if completed is None or not promise:
+            # Older projections already carried an original promise without its source version.
+            if legacy := order.get("initial_promised_at"):
+                promised_at = utc_value(datetime.fromisoformat(legacy))
+            if completed is None or promised_at is None:
                 metric["unmeasured"] += 1
             else:
-                late = (completed - utc_value(datetime.fromisoformat(promise))).total_seconds()
+                late = (completed - promised_at).total_seconds()
                 metric["late"] += late > 0
                 metric["late_seconds"] += max(late, 0)
             continue

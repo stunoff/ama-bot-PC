@@ -12,7 +12,7 @@ from ama_rs.enterprises import Actor, save_enterprise
 from ama_rs.integrations import ingest_iiko, run_bot_command
 from ama_rs.messengers import Document, Message
 from ama_rs.processes import ProcessPermissionError, cards, claim_delivery, deliveries, finish_delivery
-from ama_rs.reports import accessible_summaries, format_summary, import_coverage, import_order, schedule_reports, summary
+from ama_rs.reports import accessible_summaries, format_summary, import_coverage, import_order, preorder_promises, schedule_reports, summary
 
 now = datetime(2026, 11, 24, 9, tzinfo=UTC)
 start, end = date(2026, 11, 23), date(2026, 11, 24)
@@ -88,6 +88,21 @@ with create_database_engine().begin() as conn:
     assert second_day["unfinished_orders"]["delivery"] == 1
     assert second_day["preorders"]["delivery"] == {"completed": 1, "late": 1, "late_seconds": 900, "unmeasured": 0}
     assert second_day["orders"]["delivery"] == metric
+    out_of_order = preorder | {"order_id": "preorder-out-of-order"}
+    latest = out_of_order | {"handed_at": "2026-11-24T00:45+03:00",
+                             "updated_at": "2026-11-24T01:00:00.000002+03:00",
+                             "promised_at": "2026-11-24T01:00+03:00"}
+    earlier = out_of_order | {"updated_at": "2026-11-24T01:00:00.000001+03:00"}
+    for version in (latest, earlier, earlier | {"promised_at": "2026-11-24T01:30+03:00"}):
+        import_order(conn, settings["id"], version)
+    versions = conn.execute(select(preorder_promises.c.source_updated_at, preorder_promises.c.promised_at).where(
+        preorder_promises.c.enterprise_id == settings["id"],
+        preorder_promises.c.order_id == "preorder-out-of-order",
+    ).order_by(preorder_promises.c.source_updated_at)).all()
+    assert [version.source_updated_at.microsecond for version in versions] == [1, 2]
+    assert [version.promised_at.minute for version in versions] == [30, 0]
+    reordered = summary(conn, settings["id"], end, following_day)["preorders"]["delivery"]
+    assert reordered == {"completed": 2, "late": 2, "late_seconds": 1800, "unmeasured": 0}
     for _ in range(2):
         schedule_reports(conn, now)
     assert conn.scalar(select(func.count()).select_from(deliveries.join(cards)).where(
