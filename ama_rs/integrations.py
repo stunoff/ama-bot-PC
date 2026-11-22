@@ -199,8 +199,6 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
             form, ensure_ascii=False
         )
     if command in {"/refund_report", "/refund_export"}:
-        if command == "/refund_export" and actor.platform != "telegram":
-            return "Выгрузка CSV доступна в Telegram. Здесь используйте /refund_report."
         if not arguments:
             return (f"{command} YYYY-MM-DD YYYY-MM-DD {{фильтры}}\n"
                     "Фильтры: enterprise, brand, reason, requester, executor, status, request.")
@@ -210,7 +208,7 @@ def _dispatch(connection: Connection, command: str, arguments: str, command_id: 
         if command == "/refund_export":
             data = refund_csv(connection, actor, now, begin, until, filters)
             if len(data) > 50_000_000:
-                return "Файл превышает ограничение Telegram. Выберите более узкий период."
+                return "Файл превышает ограничение выгрузки. Выберите более узкий период."
             return Document(f"refunds-{begin}-{until}.csv", data)
         return refund_report(connection, actor, now, begin, until, filters)
     if command == "/report":

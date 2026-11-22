@@ -2,9 +2,10 @@
 
 import json
 from dataclasses import dataclass
+from time import sleep
 from uuid import uuid4
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from ama_rs.enterprises import Actor
@@ -35,24 +36,59 @@ class Document:
     data: bytes
 
 
-def send_document(token: str, chat: dict, document: Document) -> None:
+def _document_upload(url: str, field: str, document: Document, fields: dict[str, str]) -> dict:
     boundary = uuid4().hex
     while boundary.encode() in document.data:
         boundary = uuid4().hex
-    fields = {"chat_id": str(chat["id"])}
-    if chat.get("topic_id") not in (None, "1"):
-        fields["message_thread_id"] = str(int(chat["topic_id"]))
     chunks = []
     for name, value in fields.items():
         chunks.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
     chunks += [
-        (f'--{boundary}\r\nContent-Disposition: form-data; name="document"; '
+        (f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; '
          f'filename="{document.filename}"\r\nContent-Type: text/csv\r\n\r\n').encode(),
         document.data, f"\r\n--{boundary}--\r\n".encode(),
     ]
-    _read_response(Request(f"https://api.telegram.org/bot{token}/sendDocument",
+    return _read_response(Request(url,
         data=b"".join(chunks), method="POST",
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}))
+
+
+def _max_destination(chat: dict) -> str:
+    return urlencode({"user_id" if chat["kind"] == "personal" else "chat_id": chat["id"]})
+
+
+def send_document(platform: str, token: str, chat: dict, document: Document) -> None:
+    if platform == "telegram":
+        fields = {"chat_id": str(chat["id"])}
+        if chat.get("topic_id") not in (None, "1"):
+            fields["message_thread_id"] = str(int(chat["topic_id"]))
+        _document_upload(f"https://api.telegram.org/bot{token}/sendDocument", "document", document, fields)
+        return
+    if platform != "max":
+        raise ValueError("Unsupported messenger")
+    headers = {"Authorization": token}
+    upload = _post("https://platform-api.max.ru/uploads?type=file", {}, headers)
+    url = urlsplit(upload["url"])
+    if url.scheme != "https" or not url.hostname or url.username is not None:
+        raise RuntimeError("MAX returned an invalid upload URL")
+    result = _document_upload(upload["url"], "data", document, {})
+    attachment_token = result.get("token") or upload.get("token")
+    if not attachment_token:
+        raise RuntimeError("MAX did not confirm the file upload")
+    body = {"attachments": [{"type": "file", "payload": {"token": attachment_token}}]}
+    target = f"https://platform-api.max.ru/messages?{_max_destination(chat)}"
+    for delay in (0.25, 0.5, 1, None):
+        try:
+            _post(target, body, headers)
+            return
+        except HTTPError as error:
+            try:
+                code = json.load(error).get("code")
+            except (ValueError, AttributeError):
+                code = None
+            if code != "attachment.not.ready" or delay is None:
+                raise
+            sleep(delay)
 
 
 @dataclass(frozen=True)
@@ -127,7 +163,7 @@ def send_message(platform: str, token: str, chat: dict, text: str, *, quiet: boo
         body.update({"photo": photo, "caption": text[:900]} if photo else {"text": text})
         return str(_post(f"https://api.telegram.org/bot{token}/{method}", body)["result"]["message_id"])
     if platform == "max":
-        query = urlencode({"user_id" if chat["kind"] == "personal" else "chat_id": chat["id"]})
+        query = _max_destination(chat)
         body = {"text": text, "notify": not quiet}
         attachments = []
         if photo:

@@ -78,10 +78,19 @@ with create_database_engine().begin() as conn:
     safe = run_bot_command(conn, Message("csv-safe", branch, export + ' {"request":"' + dangerous["id"] + '"}'), now)
     assert list(csv.DictReader(io.StringIO(safe.data.decode("utf-8-sig"))))[0]["reason"] == "'  =1+1"
     with patch("ama_rs.messengers._read_response") as send:
-        send_document("local-fixture", {"id": "-10042", "topic_id": "10"}, document)
+        send_document("telegram", "local-fixture", {"id": "-10042", "topic_id": "10"}, document)
         request = send.call_args.args[0]
         assert request.full_url.endswith("/sendDocument")
         assert b'name="message_thread_id"\r\n\r\n10' in request.data
         assert document.data in request.data
+    max_chats = settings["chats"] | {
+        key: settings["chats"][key] | {"platform": "max"} for key in ("refunds", "management")
+    }
+    save_enterprise(conn, settings | {"chats": max_chats}, 1, "test")
+    max_executor = Actor("max", executor.user_id, executor.chat_id)
+    max_manager = Actor("max", manager.user_id, manager.chat_id)
+    max_report = run_bot_command(conn, Message("max-csv", max_executor, export), now)
+    assert isinstance(max_report, Document) and dangerous["id"].encode() in max_report.data
+    assert "недоступно" in run_bot_command(conn, Message("max-csv-deny", max_manager, export), now)
     conn.rollback()
 print("Refund report scope, filters, verified totals, duplicate confirmations CSV export and detail access verified")

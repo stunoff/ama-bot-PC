@@ -78,7 +78,7 @@ def main() -> None:
                         chat = {"id": actor.chat_id, "topic_id": actor.topic_id,
                                 "kind": "personal" if actor.chat_id == actor.user_id else "group"}
                         if isinstance(response, Document):
-                            send_document(token, chat, response)
+                            send_document(source, token, chat, response)
                         else:
                             send_message(source, token, chat, response.text if isinstance(response, Screen) else response,
                                          buttons=response.buttons if isinstance(response, Screen) else ())

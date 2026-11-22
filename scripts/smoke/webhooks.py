@@ -3,6 +3,7 @@ import hmac
 import json
 import os
 from datetime import UTC, datetime
+from io import BytesIO
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -11,7 +12,7 @@ from sqlalchemy import delete, select
 from ama_rs.db import create_database_engine
 from ama_rs.enterprises import enterprises, history, save_enterprise
 from ama_rs.integrations import receipts, run_bot_command
-from ama_rs.messengers import normalize, send_message
+from ama_rs.messengers import Document, normalize, send_document, send_message
 from ama_rs.personnel import people
 
 settings = {
@@ -36,6 +37,23 @@ with patch("ama_rs.messengers._post", return_value={"message": {"body": {"mid": 
     body = post.call_args.args[1]
     assert body["attachments"][0] == {"type": "image", "payload": {"token": "photo-token"}}
     assert body["attachments"][1]["type"] == "inline_keyboard"
+not_ready = HTTPError("https://platform-api.max.ru/messages", 400, "Pending", {},
+                      BytesIO(b'{"code":"attachment.not.ready"}'))
+with (patch("ama_rs.messengers._post", side_effect=[
+          {"url": "https://upload.max.ru/test"}, not_ready, {"message": {"body": {"mid": "csv"}}}
+      ]) as post, patch("ama_rs.messengers._read_response", return_value={"token": "csv-token"}) as upload,
+      patch("ama_rs.messengers.sleep") as wait):
+    send_document("max", "test", {"id": "2", "kind": "personal"}, Document("refunds.csv", b"one,two"))
+    upload_request = upload.call_args.args[0]
+    assert upload_request.full_url == "https://upload.max.ru/test"
+    assert b'name="data"; filename="refunds.csv"' in upload_request.data
+    assert b"one,two" in upload_request.data and not upload_request.has_header("Authorization")
+    assert post.call_args.args == (
+        "https://platform-api.max.ru/messages?user_id=2",
+        {"attachments": [{"type": "file", "payload": {"token": "csv-token"}}]},
+        {"Authorization": "test"},
+    )
+    wait.assert_called_once_with(0.25)
 engine = create_database_engine()
 with engine.begin() as conn:
     save_enterprise(conn, settings, 0, "test")
