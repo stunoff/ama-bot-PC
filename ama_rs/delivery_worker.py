@@ -96,7 +96,7 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
         file = connection.execute(select(attachments).where(
             attachments.c.card_id == card["id"], attachments.c.command_id == payload["command_id"]
         )).mappings().one()
-        photo = file["file_id"] if file["platform"] == record["chat"]["platform"] == "telegram" else None
+        photo = file["file_id"] if file["platform"] == record["chat"]["platform"] else None
         return f"{status}\nМатериал: {file['item']}", photo
     if card["kind"] in {"morning_checklist", "evening_checklist"}:
         current, steps = data["current"], data["steps"]

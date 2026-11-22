@@ -102,7 +102,14 @@ def normalize(platform: str, payload: dict) -> Message | None:
         user_id = str(message["sender"]["user_id"])
         recipient = message["recipient"]
         chat_id = user_id if recipient.get("chat_type") == "dialog" else str(recipient["chat_id"])
-        return Message(str(message["body"]["mid"]), Actor(platform, user_id, chat_id), message["body"]["text"])
+        body = message["body"]
+        images = [item["payload"]["token"] for item in body.get("attachments") or ()
+                  if isinstance(item, dict) and item.get("type") == "image"
+                  and isinstance(item.get("payload"), dict)
+                  and isinstance(item["payload"].get("token"), str)
+                  and 0 < len(item["payload"]["token"]) <= 512]
+        return Message(str(body["mid"]), Actor(platform, user_id, chat_id), body["text"],
+                       images[0] if images else None)
     return None
 
 
@@ -122,10 +129,15 @@ def send_message(platform: str, token: str, chat: dict, text: str, *, quiet: boo
     if platform == "max":
         query = urlencode({"user_id" if chat["kind"] == "personal" else "chat_id": chat["id"]})
         body = {"text": text, "notify": not quiet}
+        attachments = []
+        if photo:
+            attachments.append({"type": "image", "payload": {"token": photo}})
         if buttons:
-            body["attachments"] = [{"type": "inline_keyboard", "payload": {"buttons": [
+            attachments.append({"type": "inline_keyboard", "payload": {"buttons": [
                 [{"type": "callback", "text": label, "payload": key}] for label, key in buttons
-            ]}}]
+            ]}})
+        if attachments:
+            body["attachments"] = attachments
         return str(_post(f"https://platform-api.max.ru/messages?{query}",
                          body, {"Authorization": token})["message"]["body"]["mid"])
     raise ValueError("Unsupported messenger")

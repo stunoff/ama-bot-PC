@@ -3,6 +3,7 @@ import hmac
 import json
 import os
 from datetime import UTC, datetime
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -10,7 +11,7 @@ from sqlalchemy import delete, select
 from ama_rs.db import create_database_engine
 from ama_rs.enterprises import enterprises, history, save_enterprise
 from ama_rs.integrations import receipts, run_bot_command
-from ama_rs.messengers import normalize
+from ama_rs.messengers import normalize, send_message
 from ama_rs.personnel import people
 
 settings = {
@@ -20,6 +21,21 @@ settings = {
     "chats": {"enterprise": {"kind": "enterprise", "id": "1", "platform": "telegram", "calendar": "always"}},
     "grants": [{"chat": "enterprise", "role": "service_account", "user": "2"}],
 }
+example_max = normalize("max", {"update_type": "message_created", "message": {
+    "sender": {"user_id": 2}, "recipient": {"chat_id": 1}, "body": {
+        "mid": "max-photo", "text": "/photo card step slot", "attachments": [
+            {"type": "file", "payload": {"token": "not-an-image"}},
+            {"type": "image", "payload": {"token": "photo-token"}},
+        ],
+    },
+}})
+assert example_max.actor.chat_id == "1" and example_max.file_id == "photo-token"
+with patch("ama_rs.messengers._post", return_value={"message": {"body": {"mid": "sent-photo"}}}) as post:
+    assert send_message("max", "test", {"id": "1", "kind": "group"}, "Чек-лист",
+                        photo=example_max.file_id, buttons=(("Открыть", "card"),)) == "sent-photo"
+    body = post.call_args.args[1]
+    assert body["attachments"][0] == {"type": "image", "payload": {"token": "photo-token"}}
+    assert body["attachments"][1]["type"] == "inline_keyboard"
 engine = create_database_engine()
 with engine.begin() as conn:
     save_enterprise(conn, settings, 0, "test")
