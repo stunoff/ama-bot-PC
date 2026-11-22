@@ -11,6 +11,7 @@ from ama_rs.enterprises import Actor
 from ama_rs.accounting_correction import answer_correction, request_correction, review_correction, submit_correction
 from ama_rs.attendance import acknowledge_deviation, answer_explanation, request_explanation
 from ama_rs.cash_discrepancy import explain_discrepancy, refer_discrepancy
+from ama_rs.order_targets import confirm_order_targets
 from ama_rs.operator_shift import add_shift_photo, move_shift, plan_shift, record_shift_check
 from ama_rs.operator_handoff import offer_handoff, respond_handoff
 from ama_rs.processes import ProcessConflict
@@ -64,6 +65,7 @@ ACTIONS = {
     "maintenance.plan": operations.plan_regular_work,
     "maintenance.finish": operations.finish_regular_work,
     "operation.start": contact_center.start_operation,
+    "operation.confirm_targets": confirm_order_targets,
     "operation.morning": contact_center.submit_morning_operation,
     "operation.take": contact_center.take_operation,
     "operator_shift.plan": plan_shift,

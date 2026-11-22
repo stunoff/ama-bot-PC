@@ -1,7 +1,8 @@
 """Timezone-aware management reports and order completion metrics."""
 
+from bisect import bisect_right
 from collections import Counter
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import JSON, Column, DateTime, ForeignKey, Index, MetaData, String, Table, and_, case, func, literal, or_, select
@@ -10,6 +11,7 @@ from sqlalchemy.engine import Connection
 
 from ama_rs.checklist_setup import scenario_routes_ok
 from ama_rs.enterprises import Actor, enterprises, has_role
+from ama_rs.order_targets import BASE_TARGETS, history_until
 from ama_rs.processes import (
     ProcessPermissionError, advance_system_card, cards, create_card, deliveries, enqueue, get_card, utc_value,
 )
@@ -35,7 +37,7 @@ coverage = Table(
     Column("updated_at", DateTime, nullable=False),
 )
 
-TARGETS = {"delivery": 60, "pickup": 30, "takeaway": 20, "dine_in": 20}
+TARGETS = BASE_TARGETS | {"takeaway": 20, "dine_in": 20}
 END_FIELD = {"delivery": "handed_at", "pickup": "ready_at", "takeaway": "issued_at", "dine_in": "issued_at"}
 REPORT_ROLES = {"manager", "branch_lead"}
 
@@ -162,6 +164,12 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
 
     traffic = {kind: {"measured": 0, "over_target": 0, "unmeasured": 0, "total_seconds": 0}
                for kind in TARGETS}
+    target_rows = history_until(connection, enterprise_id, end)
+    target_times = {kind: [row["effective_at"] for row in rows] for kind, rows in target_rows.items()}
+    exceedances = {kind: dict.fromkeys(("base", "within_increase", "over_increase", "unknown"), 0)
+                   for kind in BASE_TARGETS}
+    increases = {kind: _increases(rows, BASE_TARGETS[kind], start, end)
+                 for kind, rows in target_rows.items()}
     preorders = {kind: {"completed": 0, "late": 0, "late_seconds": 0, "unmeasured": 0} for kind in TARGETS}
     unfinished = dict.fromkeys(TARGETS, 0)
     unclassified = 0
@@ -211,7 +219,19 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
             metric["unmeasured"] += 1
             continue
         metric["measured"] += 1
-        metric["over_target"] += seconds > TARGETS[kind] * 60
+        if seconds > TARGETS[kind] * 60:
+            metric["over_target"] += 1
+            if kind in BASE_TARGETS:
+                index = bisect_right(target_times[kind], accepted) - 1
+                if index < 0:
+                    group = "unknown"
+                else:
+                    target = target_rows[kind][index]["minutes"]
+                    if target == BASE_TARGETS[kind]:
+                        group = "base"
+                    else:
+                        group = "over_increase" if seconds > target * 60 else "within_increase"
+                exceedances[kind][group] += 1
         metric["total_seconds"] += seconds
     if quality["orders"] == "complete" and (unclassified or any(m["unmeasured"] for m in traffic.values())):
         quality["orders"] = "partial"
@@ -221,8 +241,30 @@ def summary(connection: Connection, enterprise_id: str, day_start: date, day_end
         "from": day_start.isoformat(), "until": day_end.isoformat(), "counts": dict(by_kind),
         "current_statuses": dict(by_status), "sources": quality, "redelivery_causes": dict(redelivery_causes),
         "orders": traffic if quality["orders"] != "unavailable" or has_order_data else None,
+        "target_increases": increases, "target_exceedances": exceedances,
         "preorders": preorders, "unfinished_orders": unfinished, "unclassified_orders": unclassified, "sales": sales, "attendance": dict(attendance),
     }
+
+
+def _increases(rows: list, base: int, start: datetime, end: datetime) -> dict:
+    count = 0
+    intervals = []
+    for index, row in enumerate(rows):
+        effective = row["effective_at"]
+        minutes = row["minutes"]
+        previous = row["previous_minutes"]
+        if start <= effective and previous is not None and minutes > previous:
+            count += 1
+        until = rows[index + 1]["effective_at"] if index + 1 < len(rows) else end
+        if minutes <= base or until <= start:
+            continue
+        intervals.append({
+            "minutes": minutes, "starts_at": max(effective, start).replace(tzinfo=UTC).isoformat(),
+            "until": until.replace(tzinfo=UTC).isoformat(), "started_before_period": effective < start,
+            "active_at_period_end": index + 1 == len(rows), "reason": row["reason"],
+            "duration_seconds": (until - max(effective, start)).total_seconds(),
+        })
+    return {"count": count, "intervals": intervals}
 
 
 def accessible_summaries(connection: Connection, actor: Actor, now: datetime,
@@ -319,6 +361,24 @@ def format_summary(data: dict) -> str:
             continue
         lines.append(f"{titles[kind]}: измерено {metric['measured']}, "
                      f"сверх нормы {metric['over_target']}, без отметки {metric['unmeasured']}")
+    for kind, breakdown in data.get("target_exceedances", {}).items():
+        if any(breakdown.values()):
+            lines.append(f"{titles[kind]} · превышения базы: без повышения {breakdown['base']}, "
+                         f"в пределах повышения {breakdown['within_increase']}, "
+                         f"сверх повышения {breakdown['over_increase']}, неизвестно {breakdown['unknown']}")
+    zone = ZoneInfo(data["timezone"])
+    for kind, stats in data.get("target_increases", {}).items():
+        if stats["intervals"]:
+            lines.append(f"{titles[kind]} · повышений за период: {stats['count']}")
+        for interval in stats["intervals"]:
+            begin = datetime.fromisoformat(interval["starts_at"]).astimezone(zone)
+            finish = datetime.fromisoformat(interval["until"]).astimezone(zone)
+            note = " · действует на конец периода" if interval["active_at_period_end"] else ""
+            if interval["started_before_period"]:
+                note += " · началось до периода"
+            lines.append(f"База {BASE_TARGETS[kind]} → {interval['minutes']} мин · "
+                         f"{begin:%d.%m %H:%M}–{finish:%d.%m %H:%M} · "
+                         f"{interval['duration_seconds'] / 60:g} мин · {interval['reason']}{note}")
     for kind, count in data.get("unfinished_orders", {}).items():
         if count:
             lines.append(f"{titles[kind]} · незавершено на конец периода: {count}")

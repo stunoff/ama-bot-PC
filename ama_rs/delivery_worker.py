@@ -88,6 +88,10 @@ def _message(connection, record: dict) -> tuple[str, str | None]:
         return (f"Просрочен онлайн-возврат {data['refund_id']}\n"
                 f"Бренд: {data['brand']} · {amount:.2f} ₽\n"
                 f"Контроль: {card['id']} · версия {card['revision']}"), None
+    if payload.get("kind") == "operation" and (targets := data.get("request", {}).get("confirmed_targets")):
+        labels = {"delivery": "Доставка", "pickup": "Самовывоз"}
+        values = ", ".join(f"{labels[kind]}: {minutes} мин" for kind, minutes in targets.items())
+        return f"{status}\nПодтверждены новые сроки: {values}\n{data['request']['reason']}", None
     if payload.get("kind") == "report":
         report = data["report"]
         if record["signal"] == "report":
